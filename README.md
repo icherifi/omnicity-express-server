@@ -1,3 +1,8 @@
+# DEV
+
+npm install
+npm run dev
+
 # TODO
 
     - Add middleware to create supabase client
