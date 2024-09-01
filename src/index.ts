@@ -6,7 +6,7 @@ import { Database } from "./types/database.types";
 const app = express();
 
 // Middleware to parse JSON bodies
-app.use(express.json());
+app.use(express.json({limit: '50mb'}));
 
 app.use("/api", userRouter);
 
