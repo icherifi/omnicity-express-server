@@ -1,9 +1,8 @@
 import { createClient } from '@supabase/supabase-js';
 import { Request, Response } from 'express';
-import { Scan } from '../types/scan.types';
-import { CreateScanDto } from '../dtos/CreateScan.dto';
-
 import dotenv from 'dotenv';
+import { Database } from '../types/database.types';
+
 dotenv.config();
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_ANON_KEY;
@@ -12,10 +11,10 @@ if (!supabaseUrl || !supabaseKey) {
   throw new Error("Missing Supabase environment variables");
 }
 const supabase = createClient(supabaseUrl, supabaseKey);
-
+type Scan = Database['public']['Tables']['scans']['Row'];
 
 export const createScan = async (req: Request, res: Response) => {
-  const { author, created_at, description, id, serialized }: CreateScanDto = req.body;
+  const { author, created_at, description, id, serialized }: Scan = req.body;
 
   const { error } = await supabase
     .from('scans')
@@ -28,27 +27,43 @@ export const createScan = async (req: Request, res: Response) => {
     });
 
   if (error) {
-    return res.status(500).json({ message: 'Error adding scan', details: error.message });
+    return res.status(500).json({ details: error });
   }
 
   res.send("Scan created successfully!");
 };
 
 export const getScans = async (req: Request, res: Response) => {
-    try {
-      // Fetch data from the scans table
-      const { data, error } = await supabase
-        .from('scans')
-        .select('*');
-  
-      if (error) {
-        throw error;
-      }
-  
-      // Send success response
-      res.status(200).json({ message: 'Scans retrieved successfully', data });
-    } catch (error) {
-      // Send error response
-      res.status(500).json({ message: 'Error retrieving scans' });
+  try {
+    const { data, error } = await supabase
+      .from('scans')
+      .select('*');
+
+    if (error) {
+      throw error;
     }
-  };
+
+    res.status(200).json(data);
+  } catch (error) {
+    res.status(500).json({ details: error });
+  }
+};
+
+export const getScansByProjectId = async (req: Request, res: Response) => {
+  const { projectId } = req.params;
+
+  try {
+    const { data, error } = await supabase
+      .from('scans')
+      .select('*')
+      .eq('project_id', projectId);
+
+    if (error) {
+      throw error;
+    }
+
+    res.status(200).json(data);
+  } catch (error) {
+    res.status(500).json({ details: error });
+  }
+};
