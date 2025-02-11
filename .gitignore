@@ -12,8 +12,11 @@ coverage
 # Benchmarking
 benchmarks/graphs
 
-#vscode
+# vscode
 .vscode
 
-#Secrets
+# Secrets
 .env
+
+# Dist
+dist
