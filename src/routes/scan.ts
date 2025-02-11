@@ -1,16 +1,15 @@
 import { Router } from "express";
-import { getCredential } from "../handlers/log";
-import { createScan, getScans } from "../handlers/scan";
+import { createScan, getScans, getScansByProjectId } from "../handlers/scan";
 
 const router = Router();
 
-// /api/uuid
-router.get("/uuid", getCredential);
-
+// /api/scans
+router.post("", createScan)
 
 // /api/scans
-router.post("/scans", createScan)
+router.get("", getScans)
 
-// /api/scans
-router.get("/scans", getScans)
+// /api/scans/project/:projectId
+router.get("/project/:projectId", getScansByProjectId);
+
 export default router;
