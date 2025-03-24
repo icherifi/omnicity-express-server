@@ -50,18 +50,87 @@ export const createProjects = async (req: Request, res: Response) => {
 };
 
 export const getProjects = async (req: Request, res: Response) => {
-  const userId = res.locals.user.id;
+  try {
+    const userId = res.locals.user.id;
+    
+    const { data: projects, error: errorProjects } = await supabase
+      .from("projects")
+      .select("*")
+      .eq("created_by", userId);
+    
+    if (errorProjects) {
+      return res.status(400).json({ error: errorProjects.message });
+    }
+    
+    if (!projects || projects.length === 0) {
+      return res.status(200).json([]);
+    }
 
-  const { data, error } = await supabase
-    .from('projects')
-    .select('*')
-    .eq('created_by', userId);
+    const projectIds = projects.map((p) => p.id);
+    const bouquetIds = projects.map((p) => p.id_bouquet).filter(Boolean);
 
-  if (error) {
-    return res.status(400).json({ error: error.message });
+    const { data: energies, error: errorEnergies } = await supabase
+      .from("energy")
+      .select("id_project, izi_response")
+      .in("id_project", projectIds);
+    
+    if (errorEnergies) {
+      return res.status(400).json({ error: errorEnergies.message });
+    }
+
+    let energyMixes: any[] = [];
+    if (bouquetIds.length > 0) {
+      const { data: mixes, error: errorMixes } = await supabase
+        .from("energy_mixes")
+        .select("id_project, mix")
+        .in("id_project", bouquetIds);
+      
+      if (errorMixes) {
+        return res.status(400).json({ error: errorMixes.message });
+      }
+      energyMixes = mixes ?? [];
+    }
+
+    const energyByProjectId: Record<number, any> = {};
+    (energies ?? []).forEach((e) => {
+      energyByProjectId[e.id_project] = e;
+    });
+
+    const mixByBouquetId: Record<string, any> = {};
+    energyMixes.forEach((m) => {
+      mixByBouquetId[m.id_project] = m;
+    });
+
+    const combined = projects.map((project) => {
+      const energyRow = energyByProjectId[project.id];
+      const mixRow = project.id_bouquet
+        ? mixByBouquetId[project.id_bouquet]
+        : null;
+      
+      return {
+        ...project,
+        iziResponse: energyRow?.izi_response,
+        mix: mixRow?.mix,
+        stateOfPlay: project.description,
+        costEstimation: mixRow
+          ? {
+              withAid: mixRow.mix.resteACharge,
+              withoutAid: mixRow.mix.coutTotal,
+            }
+          : undefined,
+        targetedEnergyRating: mixRow
+          ? mixRow.mix.etiquette
+          : undefined,
+        actualEnergyRating: energyRow
+          ? energyRow.izi_response.etiquetteInitial
+          : undefined,
+      };
+    });
+
+    res.status(200).json(combined);
+  } catch (error) {
+    res.status(500).json({ error: error });
   }
-
-  res.status(200).json(data);
 };
 
 export const findProject = async (req: Request, res: Response) => {
