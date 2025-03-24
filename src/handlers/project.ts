@@ -159,3 +159,25 @@ export const getProjectImages = async (req: Request, res: Response) => {
 
   res.status(200).json(data);
 };
+
+export const updateProjectImageFullPath = async (req: Request, res: Response) => {
+  const { projectId } = req.params;
+  const { imageFullPath } = req.body;
+  const userId = res.locals.user.id;
+
+  if (!imageFullPath) {
+    return res.status(400).json({ error: "Image URL is required" });
+  }
+
+  const { data, error } = await supabase
+    .from("projects")
+    .update({ imageFullPath })
+    .eq("id", projectId)
+    .eq("created_by", userId);
+
+  if (error) {
+    return res.status(400).json({ error: error.message });
+  }
+
+  res.status(200).json({ message: "Project image URL updated successfully", data });
+};

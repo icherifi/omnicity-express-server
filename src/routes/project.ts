@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { getProjects, findProject, updateProject, deleteProject, uploadImage, createProjects, getProjectImages } from "../handlers/project";
+import { getProjects, findProject, updateProject, deleteProject, uploadImage, createProjects, getProjectImages, updateProjectImageFullPath } from "../handlers/project";
 import { getScansByProjectId } from "../handlers/scan";
 import { verifyToken } from "../middleware/auth";
 import { saveEnergyResult, getEnergyResult } from "../handlers/energy";
@@ -28,6 +28,9 @@ router.get("/:projectId/images", getProjectImages);
 
 // /api/projects/:projectId/images/:imageId
 router.post("/:projectId/images/:imageId", uploadImage);
+
+// /api/projects/:projectId/imageFullPath
+router.put("/:projectId/imageFullPath", updateProjectImageFullPath);
 
 // /api/projects/:projectId/scans
 router.get("/:projectId/scans", getScansByProjectId);
