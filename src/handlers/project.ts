@@ -78,17 +78,17 @@ export const getProjects = async (req: Request, res: Response) => {
       return res.status(400).json({ error: errorEnergies.message });
     }
 
-    let energyMixes: any[] = [];
+    let energyChoices: any[] = [];
     if (bouquetIds.length > 0) {
-      const { data: mixes, error: errorMixes } = await supabase
-        .from("energy_mixes")
-        .select("id_project, mix")
+      const { data: choices, error: errorChoices } = await supabase
+        .from("energy_choices")
+        .select("id_project, choice")
         .in("id_project", bouquetIds);
       
-      if (errorMixes) {
-        return res.status(400).json({ error: errorMixes.message });
+      if (errorChoices) {
+        return res.status(400).json({ error: errorChoices.message });
       }
-      energyMixes = mixes ?? [];
+      energyChoices = choices ?? [];
     }
 
     const energyByProjectId: Record<number, any> = {};
@@ -96,30 +96,30 @@ export const getProjects = async (req: Request, res: Response) => {
       energyByProjectId[e.id_project] = e;
     });
 
-    const mixByBouquetId: Record<string, any> = {};
-    energyMixes.forEach((m) => {
-      mixByBouquetId[m.id_project] = m;
+    const choiceByBouquetId: Record<string, any> = {};
+    energyChoices.forEach((c) => {
+      choiceByBouquetId[c.id_project] = c;
     });
 
     const combined = projects.map((project) => {
       const energyRow = energyByProjectId[project.id];
-      const mixRow = project.id_bouquet
-        ? mixByBouquetId[project.id_bouquet]
+      const choiceRow = project.id_bouquet
+        ? choiceByBouquetId[project.id_bouquet]
         : null;
       
       return {
         ...project,
         iziResponse: energyRow?.izi_response,
-        mix: mixRow?.mix,
+        choice: choiceRow?.choice,
         stateOfPlay: project.description,
-        costEstimation: mixRow
+        costEstimation: choiceRow
           ? {
-              withAid: mixRow.mix.resteACharge,
-              withoutAid: mixRow.mix.coutTotal,
+              withAid: choiceRow.choice.resteACharge,
+              withoutAid: choiceRow.choice.coutTotal,
             }
           : undefined,
-        targetedEnergyRating: mixRow
-          ? mixRow.mix.etiquette
+        targetedEnergyRating: choiceRow
+          ? choiceRow.choice.etiquette
           : undefined,
         actualEnergyRating: energyRow
           ? energyRow.izi_response.etiquetteInitial

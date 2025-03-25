@@ -1,15 +1,7 @@
 import { Request, Response } from "express";
-import { createClient } from "@supabase/supabase-js";
+import { supabase } from "./index";
 
-export async function saveEnergyMix(req: Request, res: Response) {
-    const supabaseUrl = process.env.SUPABASE_URL;
-    const supabaseKey = process.env.SUPABASE_ANON_KEY;
-
-    if (!supabaseUrl || !supabaseKey) {
-    throw new Error("Missing Supabase environment variables");
-    }
-    
-    const supabase = createClient(supabaseUrl, supabaseKey);
+export const saveEnergyChoice = async (req: Request, res: Response) => {
     const { sessionId, strategy, bouquet } = req.body;
   
     if (!sessionId || !strategy || !bouquet) {
@@ -18,18 +10,20 @@ export async function saveEnergyMix(req: Request, res: Response) {
   
     try {
       const { data, error } = await supabase
-        .from('energy_mixes')
+        .from('energy_choices')
         .insert({
           id_project: sessionId,
           strategy: strategy,
-          mix: bouquet,
+          choice: bouquet,
         });
-
+  
       if (error) throw error;
   
       return res.status(200).json({ success: true });
     } catch (err) {
-      console.error("Erreur saveBouquet:", err);
+      console.error("Erreur saveEnergyChoice:", err);
       return res.status(500).json({ error: "Erreur serveur" });
     }
-  }
+  };
+  
+  
