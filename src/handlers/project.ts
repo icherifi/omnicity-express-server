@@ -50,18 +50,87 @@ export const createProjects = async (req: Request, res: Response) => {
 };
 
 export const getProjects = async (req: Request, res: Response) => {
-  const userId = res.locals.user.id;
+  try {
+    const userId = res.locals.user.id;
+    
+    const { data: projects, error: errorProjects } = await supabase
+      .from("projects")
+      .select("*")
+      .eq("created_by", userId);
+    
+    if (errorProjects) {
+      return res.status(400).json({ error: errorProjects.message });
+    }
+    
+    if (!projects || projects.length === 0) {
+      return res.status(200).json([]);
+    }
 
-  const { data, error } = await supabase
-    .from('projects')
-    .select('*')
-    .eq('created_by', userId);
+    const projectIds = projects.map((p) => p.id);
+    const bouquetIds = projects.map((p) => p.id_bouquet).filter(Boolean);
 
-  if (error) {
-    return res.status(400).json({ error: error.message });
+    const { data: energies, error: errorEnergies } = await supabase
+      .from("energy")
+      .select("id_project, izi_response")
+      .in("id_project", projectIds);
+    
+    if (errorEnergies) {
+      return res.status(400).json({ error: errorEnergies.message });
+    }
+
+    let energyChoices: any[] = [];
+    if (bouquetIds.length > 0) {
+      const { data: choices, error: errorChoices } = await supabase
+        .from("energy_choices")
+        .select("id_project, choice")
+        .in("id_project", bouquetIds);
+      
+      if (errorChoices) {
+        return res.status(400).json({ error: errorChoices.message });
+      }
+      energyChoices = choices ?? [];
+    }
+
+    const energyByProjectId: Record<number, any> = {};
+    (energies ?? []).forEach((e) => {
+      energyByProjectId[e.id_project] = e;
+    });
+
+    const choiceByBouquetId: Record<string, any> = {};
+    energyChoices.forEach((c) => {
+      choiceByBouquetId[c.id_project] = c;
+    });
+
+    const combined = projects.map((project) => {
+      const energyRow = energyByProjectId[project.id];
+      const choiceRow = project.id_bouquet
+        ? choiceByBouquetId[project.id_bouquet]
+        : null;
+      
+      return {
+        ...project,
+        iziResponse: energyRow?.izi_response,
+        choice: choiceRow?.choice,
+        stateOfPlay: project.description,
+        costEstimation: choiceRow
+          ? {
+              withAid: choiceRow.choice.resteACharge,
+              withoutAid: choiceRow.choice.coutTotal,
+            }
+          : undefined,
+        targetedEnergyRating: choiceRow
+          ? choiceRow.choice.etiquette
+          : undefined,
+        actualEnergyRating: energyRow
+          ? energyRow.izi_response.etiquetteInitial
+          : undefined,
+      };
+    });
+
+    res.status(200).json(combined);
+  } catch (error) {
+    res.status(500).json({ error: error });
   }
-
-  res.status(200).json(data);
 };
 
 export const findProject = async (req: Request, res: Response) => {
