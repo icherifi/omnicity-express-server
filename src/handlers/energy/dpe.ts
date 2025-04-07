@@ -1,5 +1,4 @@
 import { Request, Response } from 'express';
-import fetch from 'node-fetch';
 import readXlsxFile from 'read-excel-file/node';
 
 interface DpeData {
@@ -12,6 +11,9 @@ interface DpeData {
 
 
 function transformDpeData(data: DpeData) {
+
+    //logement_sortie => cout, 
+
     const findValue = (sheet: any[] | undefined, key: string) => {
       if (!sheet) return undefined;
       const row = sheet.find((r) => r[0] === key);
@@ -78,7 +80,7 @@ export const getDpeData = async (req: Request, res: Response) => {
             }
         }
 
-        return res.json(transformDpeData(data));
+        return res.json(data);
     } catch (error) {
         console.error('Erreur:', error);
         return res.status(500).json({ error: 'Erreur lors de la récupération du DPE' });
