@@ -6,6 +6,7 @@ import {
 } from "../../handlers/energy";
 import formRoutes from "./form";
 import choiceRoutes from "./choice";
+import dpeRoutes from "./dpe";
 
 const router = Router();
 
@@ -16,5 +17,6 @@ router.get("/result/:projectId", getEnergyResult);
 
 router.use("/form", formRoutes);
 router.use("/choice", choiceRoutes);
+router.use("/dpe", dpeRoutes);
 
 export default router; 

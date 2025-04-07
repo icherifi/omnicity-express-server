@@ -11,3 +11,4 @@ export const supabase = createClient(supabaseUrl, supabaseKey);
 export * from "./choice";
 export * from "./results";
 export * from "./form";
+export * from "./dpe";
