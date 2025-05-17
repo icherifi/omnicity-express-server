@@ -5,10 +5,16 @@ export async function createSession(req: Request, res: Response) {
   
     const resp = await fetch("https://qr.izi-by-edf.fr/api/socle/qr/sessions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ slug }),
+      headers: { 
+        "Content-Type": "application/json",
+        Authorization: "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9eyJzdWIiOiJUZXN0IiwibmFtZSI6IlFSIFNlcnZpY2UiLCJpYXQiOjE1MTYyMzkyMzR9JngCUr2KcZHQ-AYl6esoTdE-t-cv6RfxvmbCBwaAItA"
+      },
+      body: JSON.stringify({ slug })
     });
-    if (!resp.ok) throw new Error(`Erreur création session: ${resp.status}`);
+    if (!resp.ok) {
+      console.error(`Erreur création session: ${resp.status}`);
+      return res.status(500).json({ error: `Erreur création session: ${resp.status}` });
+    }
     
     const data = await resp.json();
     return res.json(data);
@@ -38,7 +44,12 @@ export async function sendStepAnswer(req: Request, res: Response) {
   
 export async function getQuizSummary(req: Request, res: Response) {
   const { sessionId } = req.params;
-  const resp = await fetch(`https://qr.izi-by-edf.fr/api/socle/qr/sessions/${sessionId}/result`);
+  const resp = await fetch(`https://qr.izi-by-edf.fr/api/socle/qr/sessions/${sessionId}/result`, {
+    headers: {
+      Authorization:
+        "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9eyJzdWIiOiJUZXN0IiwibmFtZSI6IlFSIFNlcnZpY2UiLCJpYXQiOjE1MTYyMzkyMzR9JngCUr2KcZHQ-AYl6esoTdE-t-cv6RfxvmbCBwaAItA",
+    },
+  });
   if (!resp.ok) return res.status(500).json({ error: "Erreur getQuizSummary " + resp.statusText });
 
   const data = await resp.json();
