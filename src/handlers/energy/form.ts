@@ -1,5 +1,5 @@
 import { Request, Response } from "express";
-import readXlsxFile from 'read-excel-file/node';
+import { parseStringPromise } from "xml2js";
 import { getValue, mapPeriodeConstruction, mapTypeEnergie, mapTypeAppareilChauffage, isIleDeFrance, mapOccupancyStatusToLabel, mapTypeVitrageToLabel, mapMatMenuiserieToLabel, mapVentilationCodeToLabel, getValueByColumn, mapSystemeEcsToLabel, mapFiscalIncomeToInterval, getValues } from "../../utils/form";
 import { DpeFormattedData } from "../../types/dpe.types";
 
@@ -10,7 +10,11 @@ const IZI_AUTH_TOKEN = "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9eyJzdWIiOiJUZ
 async function createIziSessionInternal(): Promise<any> {
   const resp = await fetch(`${IZI_API_URL}/sessions`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      Authorization:
+        "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9eyJzdWIiOiJUZXN0IiwibmFtZSI6IlFSIFNlcnZpY2UiLCJpYXQiOjE1MTYyMzkyMzR9JngCUr2KcZHQ-AYl6esoTdE-t-cv6RfxvmbCBwaAItA",
+    },
     body: JSON.stringify({ slug: "simulation-renovation-energetique" }),
   });
   
@@ -176,36 +180,34 @@ export async function autoFillForm(req: Request, res: Response) {
       return res.status(400).json({ error: 'Le numéro de DPE est requis' });
     }
 
-    const dpeResp = await fetch(`https://observatoire-dpe-audit.ademe.fr/pub/dpe/${dpeNumber}/xml-excel`);
-    if (!dpeResp.ok) {
-      throw new Error('Erreur lors de la récupération du DPE');
-    }
-
-    const buffer = Buffer.from(await dpeResp.arrayBuffer());
-    const sheets = ['administratif', 'logement', 'logement_sortie', 'rapport', 'lexique'];
-    const dpeData: DpeData = {
-      logement: [],
-      logement_sortie: [],
-      administratif: [],
-      rapport: [],
-      lexique: []
-    };
-
-    for (const sheet of sheets) {
-      try {
-        const rows = await readXlsxFile(buffer, { sheet });
-        dpeData[sheet] = rows;
-      } catch (error) {
-        console.warn(`Erreur lors de la lecture de la feuille ${sheet}:`, error);
+    const dpeResp = await fetch(
+      `https://prd-x-ademe-externe-api.de-c1.eu1.cloudhub.io/api/v1/pub/dpe/${dpeNumber}/xml`,
+      {
+        headers: {
+          "client_id": process.env.ADME_CLIENT_ID || "",
+          "client_secret": process.env.ADME_CLIENT_SECRET || ""
+        }
       }
+    );
+
+    if (!dpeResp.ok) {
+      const errorText = await dpeResp.text();
+      throw new Error(`Erreur lors de la récupération du DPE: ${dpeResp.status} - ${errorText}`);
     }
+
+    // Parse XML response using xml2js
+    const xmlText = await dpeResp.text();
+    const dpeDataRaw = await parseStringPromise(xmlText, { explicitArray: false, mergeAttrs: true });
+
+    const dpeData: DpeData = dpeDataRaw.dpe;
 
     const sessionData = await createIziSessionInternal();
     const sessionId = sessionData.id;
     let currentStep = sessionData.currentStep;
     let incomeQuestion: any = null;
 
-    const formData = mapDpeToFormData(dpeData);
+    const formData = mapDpeToFormData(dpeData); // Doit etre fixe
+
     const completeFormData = {
       ...formData,
       "Nombre d'habitants composant votre foyer fiscal": [householdSize],
@@ -252,7 +254,11 @@ export async function autoFillForm(req: Request, res: Response) {
       currentStep = stepData.nextStep;
     }
 
-    const summaryResp = await fetch(`${IZI_API_URL}/sessions/${sessionId}/result`);
+    const summaryResp = await fetch(`${IZI_API_URL}/sessions/${sessionId}/result`, {
+      headers: {
+        Authorization: "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9eyJzdWIiOiJUZXN0IiwibmFtZSI6IlFSIFNlcnZpY2UiLCJpYXQiOjE1MTYyMzkyMzR9JngCUr2KcZHQ-AYl6esoTdE-t-cv6RfxvmbCBwaAItA",
+      },
+    });
     if (!summaryResp.ok) {
       throw new Error(`Erreur lors de la récupération du résumé: ${summaryResp.status}`);
     }
@@ -343,8 +349,8 @@ export async function autoFillForm(req: Request, res: Response) {
   } catch (error: any) {
     console.error('Erreur détaillée:', error);
     return res.status(500).json({ 
-      error: 'Erreur lors du remplissage automatique du formulaire', 
-      details: error.message 
+      error: 'Erreur lors du remplissage automatique du formulaire',
+      details: error.message
     });
   }
 }
