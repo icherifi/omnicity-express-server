@@ -1,8 +1,8 @@
 import { Router } from "express";
 import cors from "cors"; // Import cors middleware
 import {
-  createIziSession,
-  sendStepIziAnswer,
+  createIziSessionHandler,
+  sendStepIziAnswerHandler,
   getQuizSummary,
   getQuizResults,
   autoFillForm
@@ -10,8 +10,8 @@ import {
 
 const router = Router();
 
-router.get("/session", createIziSession);
-router.post("/step-answer", sendStepIziAnswer);
+router.get("/session", createIziSessionHandler);
+router.post("/step-answer", sendStepIziAnswerHandler);
 router.get("/quiz-summary/:sessionId", getQuizSummary);
 router.post("/quiz-results", getQuizResults);
 router.post("/auto-fill", autoFillForm);

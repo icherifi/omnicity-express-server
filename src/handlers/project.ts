@@ -125,7 +125,7 @@ export const getProjects = async (req: Request, res: Response) => {
       return {
         ...project,
         iziResponse: energyRow?.izi_response,
-        choice: choiceRow?.choice,
+        energyMixChoice: choiceRow?.choice,
         dpe: dpeRow,
         stateOfPlay: project.description,
         costEstimation: choiceRow
