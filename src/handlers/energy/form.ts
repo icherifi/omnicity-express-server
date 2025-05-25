@@ -1,5 +1,5 @@
 import { Request, Response } from "express";
-import readXlsxFile from 'read-excel-file/node';
+import { parseStringPromise } from 'xml2js';
 import { getValue, mapPeriodeConstruction, mapTypeEnergie, mapTypeAppareilChauffage, isIleDeFrance, mapOccupancyStatusToLabel, mapTypeVitrageToLabel, mapMatMenuiserieToLabel, mapVentilationCodeToLabel, getValueByColumn, mapSystemeEcsToLabel, mapFiscalIncomeToInterval, getValues } from "../../utils/form";
 import { DpeFormattedData } from "../../types/dpe.types";
 
@@ -7,10 +7,10 @@ const IZI_API_URL = "https://qr.izi-by-edf.fr/api/socle/qr";
 const IRENOV_API_URL = "https://api.irenov.izi-by-edf.fr/api/session";
 const IZI_AUTH_TOKEN = "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9eyJzdWIiOiJUZXN0IiwibmFtZSI6IlFSIFNlcnZpY2UiLCJpYXQiOjE1MTYyMzkyMzR9JngCUr2KcZHQ-AYl6esoTdE-t-cv6RfxvmbCBwaAItA";
 
-async function createIziSessionInternal(): Promise<any> {
+async function createIziSession(): Promise<any> {
   const resp = await fetch(`${IZI_API_URL}/sessions`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "Authorization": IZI_AUTH_TOKEN },
     body: JSON.stringify({ slug: "simulation-renovation-energetique" }),
   });
   
@@ -21,7 +21,7 @@ async function createIziSessionInternal(): Promise<any> {
   return resp.json();
 }
 
-async function sendStepIziAnswerInternal(stepId: string, answerBody: StepAnswer): Promise<StepResponse> {
+async function sendStepIziAnswer(stepId: string, answerBody: StepAnswer): Promise<StepResponse> {
   const resp = await fetch(`${IZI_API_URL}/steps/${stepId}`, {
     method: "PATCH",
     headers: {
@@ -39,23 +39,23 @@ async function sendStepIziAnswerInternal(stepId: string, answerBody: StepAnswer)
   return resp.json();
 }
 
-export async function createIziSession(req: Request, res: Response) {
+export async function createIziSessionHandler(req: Request, res: Response) {
   try {
-    const data = await createIziSessionInternal();
+    const data = await createIziSession();
     return res.json(data);
   } catch (error: any) {
     return res.status(500).json({ error: error.message });
   }
 }
 
-export async function sendStepIziAnswer(req: Request, res: Response) {
+export async function sendStepIziAnswerHandler(req: Request, res: Response) {
   try {
     const { stepId, answer } = req.body;
     if (!stepId || !answer) {
       return res.status(400).json({ error: "stepId et answer sont requis" });
     }
 
-    const data = await sendStepIziAnswerInternal(stepId, { answer });
+    const data = await sendStepIziAnswer(stepId, { answer });
     return res.json(data);
   } catch (error: any) {
     return res.status(500).json({ error: error.message });
@@ -67,8 +67,7 @@ export async function getQuizSummary(req: Request, res: Response) {
   const { sessionId } = req.params;
   const resp = await fetch(`https://qr.izi-by-edf.fr/api/socle/qr/sessions/${sessionId}/result`, {
     headers: {
-      Authorization:
-        "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9eyJzdWIiOiJUZXN0IiwibmFtZSI6IlFSIFNlcnZpY2UiLCJpYXQiOjE1MTYyMzkyMzR9JngCUr2KcZHQ-AYl6esoTdE-t-cv6RfxvmbCBwaAItA",
+      Authorization: IZI_AUTH_TOKEN,
     },
   });
   if (!resp.ok) return res.status(500).json({ error: "Erreur getQuizSummary " + resp.statusText });
@@ -107,12 +106,12 @@ function mapDpeToFormData(dpeData: DpeData): DpeFormattedData {
   const rapportRows = dpeData?.rapport || [];
 
   const codePostal = getValue(administratifRows, "code_postal_brut") || "";
-  const periodeConst = getValue(logementRows, "periode_construction"); 
+  const periodeConst = getValue(logementRows, "periode_construction") || getValue(logementRows, "enum_periode_construction_id");
   const surfaceHabLog = getValue(logementRows, "surface_habitable_logement") || "";
-  const typeGenerateur = getValue(logementRows, "type_generateur_ch");
-  const typeVentilation = getValue(logementRows, "type_ventilation");
-  const typeVitrage = getValue(logementRows, "type_vitrage") || "";
-  const matMenuiserie = getValue(logementRows, "type_materiaux_menuiserie") || "";
+  const typeGenerateur = getValue(logementRows, "type_generateur_ch") || getValue(logementRows, "enum_type_generateur_ch_id") || getValue(logementRows, "enum_type_energie_id");
+  const typeVentilation = getValue(logementRows, "type_ventilation") || getValue(logementRows, "enum_type_ventilation_id");
+  const typeVitrage = getValue(logementRows, "type_vitrage") || getValue(logementRows, "enum_type_vitrage_id") || "";
+  const matMenuiserie = getValue(logementRows, "type_materiaux_menuiserie") || getValue(logementRows, "enum_type_materiaux_menuiserie_id") || "";
   const nbNiveaux = getValue(logementRows, "nombre_niveau_logement") || "";
 
   const systemeEcs = getValueByColumn(rapportRows, "système d'ecs", 1, 2) || "";
@@ -176,31 +175,70 @@ export async function autoFillForm(req: Request, res: Response) {
       return res.status(400).json({ error: 'Le numéro de DPE est requis' });
     }
 
-    const dpeResp = await fetch(`https://observatoire-dpe-audit.ademe.fr/pub/dpe/${dpeNumber}/xml-excel`);
+    const dpeResp = await fetch(`https://prd-x-ademe-externe-api.de-c1.eu1.cloudhub.io/api/v1/pub/dpe/${dpeNumber}/xml`, {
+      headers: {
+        'client_id': 'f15319ce605e407581242b71425bbcb6',
+        'client_secret': '4d97b25a303b412eB968C26Aef30D933',
+        'Content-Type': 'application/json'
+      }
+    });
     if (!dpeResp.ok) {
-      throw new Error('Erreur lors de la récupération du DPE');
+      throw new Error(`Erreur lors de la récupération du DPE: ${dpeResp.statusText}`);
     }
 
-    const buffer = Buffer.from(await dpeResp.arrayBuffer());
-    const sheets = ['administratif', 'logement', 'logement_sortie', 'rapport', 'lexique'];
+    const xmlText = await dpeResp.text();
+
+    const parsedXml: any = await parseStringPromise(xmlText, {
+      explicitArray: false,
+      mergeAttrs: true,
+    });
+
+    const sheets = [
+      'administratif',
+      'logement',
+      'logement_sortie',
+      'rapport',
+      'lexique',
+    ];
+
     const dpeData: DpeData = {
       logement: [],
       logement_sortie: [],
       administratif: [],
       rapport: [],
-      lexique: []
+      lexique: [],
     };
 
+    function flattenObjectToRows(
+      obj: any,
+      rows: any[][],
+      addEmptyFirstCol = false,
+    ) {
+      if (!obj) return;
+      Object.entries(obj).forEach(([key, value]) => {
+        if (value === null || value === undefined) return;
+        if (typeof value === 'object') {
+          flattenObjectToRows(value, rows, addEmptyFirstCol);
+        } else {
+          if (addEmptyFirstCol) {
+            rows.push(['', key, String(value)]);
+          } else {
+            rows.push([key, String(value)]);
+          }
+        }
+      });
+    }
+
     for (const sheet of sheets) {
-      try {
-        const rows = await readXlsxFile(buffer, { sheet });
-        dpeData[sheet] = rows;
-      } catch (error) {
-        console.warn(`Erreur lors de la lecture de la feuille ${sheet}:`, error);
+      const section = (parsedXml?.dpe && (parsedXml.dpe as any)[sheet]) || parsedXml[sheet];
+      if (section) {
+        const rows: any[][] = [];
+        flattenObjectToRows(section, rows, sheet === 'rapport');
+        dpeData[sheet as keyof DpeData] = rows;
       }
     }
 
-    const sessionData = await createIziSessionInternal();
+    const sessionData = await createIziSession();
     const sessionId = sessionData.id;
     let currentStep = sessionData.currentStep;
     let incomeQuestion: any = null;
@@ -248,11 +286,13 @@ export async function autoFillForm(req: Request, res: Response) {
         break;
       }
 
-      const stepData = await sendStepIziAnswerInternal(currentStep.id, answerBody);
+      const stepData = await sendStepIziAnswer(currentStep.id, answerBody);
       currentStep = stepData.nextStep;
     }
 
-    const summaryResp = await fetch(`${IZI_API_URL}/sessions/${sessionId}/result`);
+    const summaryResp = await fetch(`${IZI_API_URL}/sessions/${sessionId}/result`, {
+      headers: { "Authorization": IZI_AUTH_TOKEN },
+    });
     if (!summaryResp.ok) {
       throw new Error(`Erreur lors de la récupération du résumé: ${summaryResp.status}`);
     }
