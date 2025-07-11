@@ -22,7 +22,7 @@ export function getValues(
     .map(r => String(r[valCol]).trim());
 }
 
-const isTrivial = (v: string) => /^(oui|non)$/i.test(v.trim()) || /^\d+$/.test(v.trim());
+const isTrivial = (v: string) => /^(oui|non)$/i.test(v.trim());
 
 
 export function getValueByColumn(
@@ -84,26 +84,51 @@ const DICO_PERIODE: Record<string, string> = {
 };
 
 const DICO_ENERGIE = [
-  { rx: /réseau\s+de\s+chaleur|cpcu|urbain/, lbl: 'Réseau de chaleur' },
-  { rx: /gaz|gnl|propane|naturel/, lbl: 'Gaz ou propane' },
-  { rx: /fioul|fuel/, lbl: 'Fioul' },
-  { rx: /elect|élec|hp\/hc/, lbl: 'Electricité' },
-  { rx: /bois|granul|pellet/, lbl: 'Bois' },
+  { rx: /reseau\s+(de\s+)?(chaleur|chauffage).*urbain?|cpcu/, lbl: 'Gaz ou propane' },
+  { rx: /reseau\s+de\s+chaleur/,                               lbl: 'Gaz ou propane' },
+  { rx: /gaz|gnl|propane|naturel/,                                 lbl: 'Gaz ou propane' },
+  { rx: /fioul|fuel/,                                              lbl: 'Fioul' },
+  { rx: /elect|élec|hp\/hc/,                                       lbl: 'Electricité' },
+  { rx: /bois|granul|pellet/,                                      lbl: 'Bois' },
+  { rx: /installation\s+collective|multi[- ]batiment/,           lbl: 'Gaz ou propane' },
+  { rx: /renouvelable/,                                   lbl: 'Gaz ou propane' },
+  { rx: /^\d+$/,                                      lbl: 'Gaz ou propane' },
 ];
 
 const DICO_APPAREIL = [
-  { rx: /réseau\s+de\s+chaleur/, lbl: 'Réseau de chaleur urbain' },
-  { rx: /chaudiere.*condens/, lbl: 'Chaudière gaz à condensation' },
+  { rx: /reseau.*(chaleur|chauffage).*/, lbl: 'Chaudière gaz à condensation' },
+  { rx: /installation\s+collective(\s+unique)?(\s+multi[- ]?batiment)?/, lbl: 'Chaudière gaz à condensation' },
+  { rx: /chaudiere.*condens/,                  lbl: 'Chaudière gaz à condensation' },
+  { rx: /chaudiere.*(gaz|gnl).*basse.*temperature/, lbl: 'Chaudière gaz basse température' },
   { rx: /chaudiere.*(gaz|gnl)/, lbl: 'Chaudière gaz standard' },
-  { rx: /chaudiere.*(fioul|fuel)/, lbl: 'Chaudière fioul' },
-  { rx: /(pac|pompe à chaleur).*air.?air/, lbl: 'Pompe à chaleur air/air' },
-  { rx: /(pac|pompe à chaleur).*air.?eau/, lbl: 'Pompe à chaleur air/eau' },
+  { rx: /radiateur.*gaz/, lbl: 'Radiateurs à gaz' },
+  { rx: /chaudiere.*(fioul|fuel).*condens/, lbl: 'Chaudière fioul à condensation' },
+  { rx: /chaudiere.*(fioul|fuel).*basse.*temperature/, lbl: 'Chaudière fioul basse température' },
+  { rx: /chaudiere.*(fioul|fuel)/, lbl: 'Chaudière fioul standard' },
+  { rx: /poele.*fioul/, lbl: 'Poêle au fioul' },
+  { rx: /chaudiere.*bois/, lbl: 'Chaudière bois' },
+  { rx: /poele.*buches/, lbl: 'Poêle à buches' },
+  { rx: /poele.*bois.*bouilleur/, lbl: 'Poêle à bois bouilleur' },
+  { rx: /poele.*granules/, lbl: 'Poêle à granulés' },
+  { rx: /chaudiere.*granules/, lbl: 'Chaudière à granulés' },
+  { rx: /poele.*charbon/, lbl: 'Poêle au charbon' },
+  { rx: /(pac|pompe\s+à\s+chaleur).*air.?air/, lbl: 'Pompe à chaleur air/air' },
+  { rx: /(pac|pompe\s+a\s+chaleur).*air.?air/, lbl: 'Pompe à chaleur air/air' },
+  { rx: /(pac|pompe\s+à\s+chaleur).*air.?eau/, lbl: 'Pompe à chaleur air/eau' },
+  { rx: /(pac|pompe\s+a\s+chaleur).*air.?eau/, lbl: 'Pompe à chaleur air/eau' },
   { rx: /(pac|pompe à chaleur)/, lbl: 'Autre type de pompe à chaleur' },
-  { rx: /joule|effet\s+joule|panneau\s+rayonnant|radiateur.*électrique/, lbl: 'Chaudière électrique' },
+  { rx: /(pac|pompe\s+a\s+chaleur)/, lbl: 'Autre type de pompe à chaleur' },
+  { rx: /joule|effet\s+joule|panneau\s+rayonnant/, lbl: 'Panneaux rayonnants' },
+  { rx: /radiateur.*électrique/, lbl: 'Convecteurs électriques' },
+  { rx: /radiateur.*electrique/, lbl: 'Convecteurs électriques' },
+  { rx: /radiateur.*fluide.*caloporteur/, lbl: 'Convecteurs électriques' },
   { rx: /convecteur/, lbl: 'Convecteurs électriques' },
   { rx: /chaudiere.*electrique/, lbl: 'Chaudière électrique' },
-  { rx: /chaudiere.*bois/, lbl: 'Chaudière bois' },
-  { rx: /radiateur.*electrique/, lbl: 'Chaudière électrique' },
+  { rx: /plancher.*rayonnant|plafond.*rayonnant/, lbl: 'Plancher ou plafond rayonnant' },
+  { rx: /generateur.*mixte.*basse.*temp/, lbl: 'Chaudière gaz basse température' },
+  { rx: /generateur.*mixte/, lbl: 'Chaudière gaz standard' },
+  { rx: /chauffe.*bain.*gaz|chauffe[- ]eau.*gaz.*instantan/, lbl: 'Chaudière gaz standard' },
+  { rx: /chaudiere.*classique/, lbl: 'Chaudière gaz standard' },
 ];
 
 const DICO_VENTILATION = [
@@ -113,6 +138,7 @@ const DICO_VENTILATION = [
   { rx: /vh\b|hybride/, lbl: 'Ventilation hybride' },
   { rx: /entr..es d.?air|vea/, lbl: 'Ventilation par entrées d\'air hautes et basses' },
   { rx: /naturelle|ouverture fenetre|ouverture des fenetres/, lbl: 'Ventilation naturelle' },
+  { rx: /ventilation.*conduit.*existant/, lbl: 'VMC simple flux autoréglable' },
 ];
 
 const DICO_VITRAGE = [
@@ -134,6 +160,10 @@ export function mapPeriodeConstruction(raw: string | null): string {
 
   const m = raw.match(/(\d{4}).*?(\d{4})/);
   if (m) {
+    const [y1, y2] = m.slice(1, 3).map(Number);
+    if (!isNaN(y1) && !isNaN(y2) && y1 > 2012 && y2 > 2012) {
+      return DICO_PERIODE.apres2012;
+    }
     const k = `${m[1]}-${m[2]}`;
     if (DICO_PERIODE[k]) return DICO_PERIODE[k];
     return `Entre ${m[1]} et ${m[2]}`;
@@ -156,20 +186,32 @@ export function mapPeriodeConstruction(raw: string | null): string {
 
 export const mapTypeEnergie = (r: string | null) => mapWithDict(r, DICO_ENERGIE, 'Autre / inconnu');
 export const mapTypeAppareilChauffage = (r: string | null) => mapWithDict(r, DICO_APPAREIL, 'Autre / inconnu');
-export const mapVentilationCodeToLabel = (r: string | null) => mapWithDict(r, DICO_VENTILATION, 'Inconnu');
-export const mapTypeVitrageToLabel = (r: string | null) => mapWithDict(r, DICO_VITRAGE, 'Inconnu');
-export const mapMatMenuiserieToLabel = (r: string | null) => mapWithDict(r, DICO_MENUISERIE, 'Autre / inconnu');
+export const mapVentilationCodeToLabel = (r: string | null) => {
+  if (!r || !r.trim()) return 'Ventilation naturelle';
+  return mapWithDict(r, DICO_VENTILATION, 'Ventilation naturelle');
+};
+export const mapTypeVitrageToLabel = (r: string | null) => {
+  const lbl = mapWithDict(r, DICO_VITRAGE, 'Double vitrage récent (moins de 25 ans)');
+  return lbl === 'Simple vitrage' ? 'Double vitrage récent (moins de 25 ans)' : lbl;
+};
+export const mapMatMenuiserieToLabel = (r: string | null) => mapWithDict(r, DICO_MENUISERIE, 'PVC');
 
 export function mapSystemeEcsToLabel(raw: string | null): string {
   if (!raw) return 'Inconnu';
   const txt = normalise(raw);
 
+  // Prioriser les types spécifiques de générateurs
+  if (/^\d+(\.\d+)?$/.test(txt)) return 'Ballon électrique'; // valeur numérique seule (souvent volume)
+  if (/ballon.*electrique|accumulation.*electrique|electrique.*ballon/.test(txt)) return 'Ballon électrique';
   if (/thermodynam|pac.*ecs/.test(txt)) return 'Chauffe-eau thermodynamique';
   if (/solair|cesi|chauffe.?eau.*solaire/.test(txt)) return 'Chauffe-eau solaire thermique';
+  if (/chauffage.*ecs/.test(txt)) return 'Chauffe-eau gaz';
   if (/(accum|ballon|cumulus).*gaz/.test(txt)) return 'Accumulateur gaz';
   if (/(accum|ballon|cumulus).*elect/.test(txt)) return 'Ballon électrique';
   if (/chauffe.?eau.*gaz|chaudiere.*mixte/.test(txt)) return 'Chauffe-eau gaz';
-  if (/chauffage et ecs|individuel|système d'ecs.*homogène/.test(txt)) return 'Chauffe-eau gaz';
+  // Patterns génériques en dernier
+  if (/chauffage et ecs|mon système de chauffage/.test(txt)) return 'Mon système de chauffage';
+  if (/individuel|système d'ecs.*homogène/.test(txt)) return 'Ballon électrique'; // Par défaut pour les systèmes individuels
 
   return 'Chauffe-eau gaz';
 }
@@ -177,11 +219,25 @@ export function mapSystemeEcsToLabel(raw: string | null): string {
 export function inferEnergyFromGenerator(gen: string | null): string | null {
   if (!gen) return null;
   const txt = gen.toLowerCase();
-  if (/gaz|gnl|propane|naturel/.test(txt))   return "Gaz ou propane";
-  if (/fioul|fuel/.test(txt))                return "Fioul";
-  if (/bois|granul|pellet/.test(txt))        return "Bois";
-  if (/charbon|lignite|anthracite/.test(txt)) return "Charbon";
-  if (/elect|élec|hp\/hc/.test(txt))         return "Electrique";
+  
+  // Pompes à chaleur (toujours électriques)
+  if (/pompe.*chaleur|pac|pompe.*air|pompe.*eau/i.test(txt)) return "Electrique";
+  
+  // Appareils électriques
+  if (/elect|élec|hp\/hc|radiateur.*electrique|convecteur|panneau.*rayonnant|effet.*joule/i.test(txt)) return "Electrique";
+  
+  // Appareils à gaz
+  if (/gaz|gnl|propane|naturel|chaudiere.*gaz/i.test(txt)) return "Gaz ou propane";
+  
+  // Appareils à fioul
+  if (/fioul|fuel|chaudiere.*fioul/i.test(txt)) return "Fioul";
+  
+  // Appareils à bois
+  if (/bois|granul|pellet|poele.*bois/i.test(txt)) return "Bois";
+  
+  // Appareils à charbon
+  if (/charbon|lignite|anthracite/i.test(txt)) return "Charbon";
+  
   return null;
 }
 

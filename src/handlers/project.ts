@@ -16,13 +16,13 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 type Project = Database['public']['Tables']['projects']['Row'];
 
 export const createProject = async (req: Request, res: Response) => {
-  const { id_bouquet, id_design, address, state, name } : Project = req.body;
+  const { id_bouquet, id_design, address, state, name, firstName, lastName, contract_type, features } = req.body as any;
   const userId = res.locals.user.id;
 
   const { data, error } = await supabase
     .from('projects')
     .insert([
-      { id_bouquet, id_design, address, state, name, created_by: userId }
+      { id_bouquet, id_design, address, state, name, firstName, lastName, contract_type, features, created_by: userId }
     ])
 
   if (error) {
@@ -33,7 +33,7 @@ export const createProject = async (req: Request, res: Response) => {
 };
 
 export const createProjects = async (req: Request, res: Response) => {
-  const projects: Project[] = req.body;
+  const projects: any[] = req.body;
   const userId = res.locals.user.id;
   const projectsWithUser = projects.map(project => ({ ...project, created_by: userId }));
 
@@ -172,14 +172,42 @@ export const findProject = async (req: Request, res: Response) => {
 };
 
 export const updateProject = async (req: Request, res: Response) => {
-  const { id } = req.params;
-  const { id_bouquet, id_design, address, state, name, created_by } : Project = req.body;
+  const { projectId } = req.params;
+  const {
+    id_bouquet,
+    id_design,
+    address,
+    state,
+    name,
+    created_by,
+    firstName,
+    lastName,
+    contract_type,
+    features,
+  } = req.body as any;
   const userId = res.locals.user.id;
+
+  const fields = {
+    id_bouquet,
+    id_design,
+    address,
+    state,
+    name,
+    created_by,
+    firstName,
+    lastName,
+    contract_type,
+    features,
+  };
+
+  const updateFields = Object.fromEntries(
+    Object.entries(fields).filter(([, v]) => v !== undefined)
+  );
 
   const { data, error } = await supabase
     .from('projects')
-    .update({ id_bouquet, id_design, address, state, name, created_by })
-    .eq('id', id)
+    .update(updateFields)
+    .eq('id', projectId)
     .eq('created_by', userId);
 
   if (error) {
