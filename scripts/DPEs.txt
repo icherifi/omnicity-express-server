@@ -1,0 +1,26 @@
+Automatiser script qui tourne dans terminal si problème je partage manuellement
+
+
+Ces règles s'applique à ton role de testeur d'auto completion de formulaire à partir d'un numéro de DPE via le fichier @dpe-autofill.ts. 
+
+Ton role est de faire des tests en appellant le fichier @dpe-autofill.ts pour un numéro de DPE communiqué, tu génère la commande: "npx ts-node scripts/dpe-autofill.ts DPENUMBER". Si le test se cloture par un succès (indiquer par les logs) le test est donc terminer et rien est à faire si ce n'est de mentionner les mappings (clé initial vers valeur mappé) qui ont ete fait.
+
+Lorsque tu test un numéro de DPE, si tu rencontres une erreur c'est une erreur HTTP 400 (de l'api iRenov) stipulant: "multi question with one possible answer". Cela en réalité veut dire qu'une réponse à une question est faites avec un terme qui n'est pas accepter par IZI et si ce terme à été renvoyé par le code c'est que le matching dont les fonctions sont dans @form.ts  n'a pas été réussi et qu'il a renvoyé une valeur "Inconnu" en tant que réponse à la question ou qu'l n'a pas renvoyé la bonne valeur. Lorsque tu rencontres cette erreur voici la démarche à suivre:
+
+0. Consulte le xml entier afin de vérifier si les clés récupéré ( directement ou indirectement via l'IA tel que le type d'energie, chaffage, ventilation) sont cohérent.
+1. Récuperer la clé qui sert de réponse à la question (qui est passé à la fonction de map et qui est récupéré directement de l'xml ou indirectement via la réponse de l'IA)
+2. Comparer cette dernière clé avec les réponses possibles et déterminer la cause du non-matching et du renvoi d'une réponse érroné ou inconnu
+3. Mettre à jour la fonction de matching pour qu'elle renvoie une valeur ACCEPTABLE par IZI, cette valeur doit etre la valeur la plus proche de la clé passé en paramètre que ce soit explicite (Bois - Poêle à granulés flamme verte installé entre 2012 et 2019 => Poêle à granulés) ou implicite par logique (
+    installation collective multi-bâtiment : modélisée comme un réseau de chaleur; exploitant les énergies : réseau de chauffage urbain; => Chaudière gaz à condensation (justification: Très répandue dans les réseaux récents pour leur efficacité énergétique.)
+). Cette mise à jour se fait donc au niveau des dictionnaires matchant "valeurs aléatoires" au labels faisant office de réponse accepté par IZI.
+
+Des erreurs HTTP 500 peuvent aussi apparaitre et elles sont du à une mauvaise combinaison de question réponses à IZI, ce ne sont pas les réponses qui sont érronés dans ce cas (erreur 400 dans ce cas) mais plutot les labels des questions qui ne sont pas correctes ou une question est manquante.
+
+Il te faut impérativement suivre cette démarche et rien d'autres, en aucun cas la solution serai d'imposer des valeurs au lieu de renvoyer "Inconnu", "Inconnu" est renvoyé pour le debugging, il n'est jamais censé etre renvoyé par les fonctions de mapping car les dictionnaires et les fonctions sont censés etre assez riche pour toujours renvoyé une valeur cohérente c'est à ça que sert les tests. Toutes les questions doivent avoir une réponses, aucune clé (paramètre de fonction de mapping) n'est donc supprimable. Dans la grande majorité des casucun motif générique ne sera solution.
+
+Finalement si tu réalises des modifications dans @dpe-autofill.ts il faut reproduire les meme dans @form.ts  qui est le fichier original et l'implementation de production de l'auto completion du formulaire izi via le dpe @dpe-autofill.ts étant un script permettant de tester cette fonctionnalité d'auto completion et se calcant sur @form.ts.
+
+Mentionne constamment les changements que tu emplois et synthétise les à la fin. Mentionne parrement les valeurs qui posaient problèmes pourquoi et pourquoi maintenant ce n'est plus le cas.
+
+Applique et effectue toujours les changements que tu proposes sans jamais me donner des actions à mener, fais les directement.
+

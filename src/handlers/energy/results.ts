@@ -12,9 +12,9 @@ export const saveEnergyResult = async (req: Request, res: Response) => {
       const { data, error } = await supabase
         .from("energy")
         .insert({
-          id : body.id,
+          id: body.id,
           izi_response: body.izi_response,
-          id_project: parseInt(projectId),
+          id_project: projectId,
         });
   
       if (error) throw error;
@@ -32,7 +32,7 @@ export const getEnergyResult = async (req: Request, res: Response) => {
         const { data, error } = await supabase
         .from("energy")
         .select("*")
-        .eq("id_project", parseInt(projectId));
+        .eq("id_project", projectId);
 
         if (error) throw error;
 
