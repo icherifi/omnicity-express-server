@@ -4,6 +4,7 @@ import scanRoutes from "./scan";
 import { getCredential } from "../handlers/log";
 import energyRoutes from "./energy/index";
 import dpeRoutes from "./dpe";
+import rgeRoutes from "./rge";
 const router = Router();
 
 // /api/uuid
@@ -13,5 +14,6 @@ router.use("/projects", projectRoutes);
 router.use("/scans", scanRoutes);
 router.use("/energy", energyRoutes);
 router.use("/dpe", dpeRoutes);
+router.use("/rge", rgeRoutes);
 
 export default router;

@@ -1,425 +1,421 @@
 import { Request, Response } from "express";
-import { parseStringPromise } from 'xml2js';
-import { getValue, mapPeriodeConstruction, mapTypeEnergie, mapTypeAppareilChauffage, isIleDeFrance, mapOccupancyStatusToLabel, mapTypeVitrageToLabel, mapMatMenuiserieToLabel, mapVentilationCodeToLabel, getValueByColumn, mapSystemeEcsToLabel, mapFiscalIncomeToInterval, getValues } from "../../utils/form";
-import { DpeFormattedData } from "../../types/dpe.types";
+import { getValue, mapOccupancyStatusToLabel, mapFiscalIncomeToInterval } from "../../utils/form";
+import { createIziSession as createIziSessionSvc, sendStepAnswer as sendStepIziAnswerSvc, getSessionResult } from "../../services/iziService";
+import { getDpeData } from "../../services/dpeService";
+import { mapDpeToFormData as mapDpeToFormDataSvc, extractDpeMetrics as extractDpeMetricsSvc } from "../../services/energyMappingService";
 
 const IZI_API_URL = "https://qr.izi-by-edf.fr/api/socle/qr";
 const IRENOV_API_URL = "https://api.irenov.izi-by-edf.fr/api/session";
 const IZI_AUTH_TOKEN = "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9eyJzdWIiOiJUZXN0IiwibmFtZSI6IlFSIFNlcnZpY2UiLCJpYXQiOjE1MTYyMzkyMzR9JngCUr2KcZHQ-AYl6esoTdE-t-cv6RfxvmbCBwaAItA";
 
-async function createIziSession(): Promise<any> {
-  const resp = await fetch(`${IZI_API_URL}/sessions`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "Authorization": IZI_AUTH_TOKEN },
-    body: JSON.stringify({ slug: "simulation-renovation-energetique" }),
-  });
-  
-  if (!resp.ok) {
-    throw new Error(`Erreur création session: ${resp.status}`);
-  }
-  
-  return resp.json();
-}
+type StepAnswer = { answer: number | number[] };
 
-async function sendStepIziAnswer(stepId: string, answerBody: StepAnswer): Promise<StepResponse> {
-  const resp = await fetch(`${IZI_API_URL}/steps/${stepId}`, {
-    method: "PATCH",
-    headers: {
-      "Content-Type": "application/merge-patch+json",
-      Authorization: IZI_AUTH_TOKEN,
-    },
-    body: JSON.stringify(answerBody),
-  });
+// Contexte mémoire pour chaque session IZI afin de pouvoir reprendre l'auto-complétion après intervention utilisateur
+const sessionsContext = new Map<string, {
+  completeFormData : Record<string, any>,
+  dpeData          : any,
+  fiscalIncome     : string,
+  incomeQuestion   : any,
+  packTravauxInfos : any,
+}>();
 
-  if (!resp.ok) {
-    const errorText = await resp.text();
-    throw new Error(`Erreur lors de l'envoi de la réponse: ${resp.status} - ${errorText}`);
-  }
+/**
+ * Parcourt les étapes IZI à partir d'un currentStep en essayant d'y répondre automatiquement.
+ * S'arrête et retourne la première question sans réponse ou au format invalide.
+ * @returns { nextQuestion?: any, lastStep?: any, incomeQuestion?: any }
+ */
+async function internalAutoFillLoop(currentStep: any, completeFormData: Record<string, any>) {
+  let incomeQuestion: any = null;
 
-  return resp.json();
-}
-
-export async function createIziSessionHandler(req: Request, res: Response) {
-  try {
-    const data = await createIziSession();
-    return res.json(data);
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
-  }
-}
-
-export async function sendStepIziAnswerHandler(req: Request, res: Response) {
-  try {
-    const { stepId, answer } = req.body;
-    if (!stepId || !answer) {
-      return res.status(400).json({ error: "stepId et answer sont requis" });
+  while (currentStep?.node?.question) {
+    // Saut de la question sur les revenus
+    if (currentStep.node.question.label === "Revenu annuel moyen de votre foyer fiscal") {
+      incomeQuestion = currentStep.node.question;
+      currentStep    = currentStep.nextStep;
+      continue;
     }
 
-    const data = await sendStepIziAnswer(stepId, { answer });
-    return res.json(data);
-  } catch (error: any) {
-    return res.status(500).json({ error: error.message });
+    const qLabel = currentStep.node.question.label.replace(":", "").trim() as keyof typeof completeFormData;
+    const answer = completeFormData[qLabel];
+
+    if (!answer) {
+      return { nextQuestion: currentStep.node.question, stepId: currentStep.id, incomeQuestion };
+    }
+
+    // Préparation du corps de réponse selon le type de question
+    let answerBody: StepAnswer | null = null;
+    if (currentStep.node.question.type === "QuestionChoice") {
+      const choice = currentStep.node.question.choices?.find((c: any) => c.label === answer[0]);
+      if (choice) answerBody = { answer: [choice.id] };
+    } else if (currentStep.node.question.type === "QuestionInteger") {
+      const val = parseFloat(Array.isArray(answer) ? answer[0] : answer);
+      if (!isNaN(val)) answerBody = { answer: Math.round(val) };
+    }
+
+    if (!answerBody) {
+      return { nextQuestion: currentStep.node.question, stepId: currentStep.id, incomeQuestion };
+    }
+
+    const stepData = await sendStepIziAnswerSvc(currentStep.id, answerBody);
+    currentStep    = stepData.nextStep;
   }
-}
 
-  
-export async function getQuizSummary(req: Request, res: Response) {
-  const { sessionId } = req.params;
-  const resp = await fetch(`https://qr.izi-by-edf.fr/api/socle/qr/sessions/${sessionId}/result`, {
-    headers: {
-      Authorization: IZI_AUTH_TOKEN,
-    },
-  });
-  if (!resp.ok) return res.status(500).json({ error: "Erreur getQuizSummary " + resp.statusText });
-
-  const data = await resp.json();
-  return res.status(200).json(data);
-}
-
-export async function getQuizResults(req: Request, res: Response) {
-  const { responses } = req.body;
-  
-  try {
-    const response = await fetch(
-      "https://api.irenov.izi-by-edf.fr/api/session",
-      {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",     
-        },
-        body: JSON.stringify(responses),
-      }
-    );
-
-    if (!response.ok) throw new Error(response.statusText);
-
-    const data = await response.json();
-    return res.status(200).json(data);
-  } catch (error) {
-    return res.status(500).json({ error: "Erreur getQuizResults " + error });
-  }
-}
-
-function mapDpeToFormData(dpeData: DpeData): DpeFormattedData {
-  const logementRows = dpeData?.logement || [];
-  const administratifRows = dpeData?.administratif || [];
-  const rapportRows = dpeData?.rapport || [];
-
-  const codePostal = getValue(administratifRows, "code_postal_brut") || "";
-  const periodeConst = getValue(logementRows, "periode_construction") || getValue(logementRows, "enum_periode_construction_id");
-  const surfaceHabLog = getValue(logementRows, "surface_habitable_logement") || "";
-  const typeGenerateur = getValue(logementRows, "type_generateur_ch") || getValue(logementRows, "enum_type_generateur_ch_id") || getValue(logementRows, "enum_type_energie_id");
-  const typeVentilation = getValue(logementRows, "type_ventilation") || getValue(logementRows, "enum_type_ventilation_id");
-  const typeVitrage = getValue(logementRows, "type_vitrage") || getValue(logementRows, "enum_type_vitrage_id") || "";
-  const matMenuiserie = getValue(logementRows, "type_materiaux_menuiserie") || getValue(logementRows, "enum_type_materiaux_menuiserie_id") || "";
-  const nbNiveaux = getValue(logementRows, "nombre_niveau_logement") || "";
-
-  const systemeEcs = getValueByColumn(rapportRows, "système d'ecs", 1, 2) || "";
-
-  return {
-    "L'année de construction du logement": [mapPeriodeConstruction(periodeConst)],
-    "La maison est-elle mitoyenne ?": ["Non"],
-    "Le nombre de niveaux habités": [nbNiveaux],
-    "Le type d'appareil de votre chauffage principal": [mapTypeAppareilChauffage(typeGenerateur)],
-    "Le type de toiture": ["Combles perdus"],
-    "Possédez-vous un second type de chauffage ?": ["Non"],
-    "Quel appareil produit votre eau chaude sanitaire ?": [mapSystemeEcsToLabel(systemeEcs || "")],
-    "Quel est le matériau de vos fenêtres ?": [mapMatMenuiserieToLabel(matMenuiserie)],
-    "Quel est le type de ventilation ?": [mapVentilationCodeToLabel(typeVentilation || "VMC SF hygro B")],
-    "Quel est votre type de planchers bas ?": ["Cave ou sous-sol"],
-    "Quelle est la source d'énergie de chauffage principale ?": [mapTypeEnergie(typeGenerateur)],
-    "Sa forme": ["Rectangulaire compacte"],
-    "Sa surface habitable (m²)": surfaceHabLog,
-    "Vous habitez": [isIleDeFrance(codePostal)],
-    "Avez-vous déjà effectué des travaux d'isolation de vos murs ?": ["Je ne sais pas"],
-    "Avez-vous déjà effectué des travaux d'isolation de votre toiture ?": ["Je ne sais pas"],
-    "Avez-vous déjà effectué des travaux d'isolation de vos planchers bas ?": ["Je ne sais pas"],
-    "Code Postal": codePostal,
-    "Comment est le vitrage de vos fenêtres ?": [mapTypeVitrageToLabel(typeVitrage)]
-  };
-}
-interface DpeData {
-  [key: string]: any[];
-  logement: any[];
-  logement_sortie: any[];
-  administratif: any[];
-  rapport: any[];
-  lexique: any[];
-}
-
-interface StepResponse {
-  nextStep: {
-    id: string;
-    node: {
-      question: {
-        label: string;
-        type: string;
-        choices?: Array<{
-          id: string;
-          label: string;
-        }>;
-      };
-    };
-  };
-}
-
-interface StepAnswer {
-  answer: number | number[];
+  return { lastStep: currentStep, incomeQuestion };
 }
 
 export async function autoFillForm(req: Request, res: Response) {
   try {
     const { dpeNumber, fiscalIncome, householdSize, occupancyStatus } = req.body;
-    
-    if (!dpeNumber) {
-      return res.status(400).json({ error: 'Le numéro de DPE est requis' });
-    }
+    if (!dpeNumber) return res.status(400).json({ error: "Le numéro de DPE est requis" });
 
-    const dpeResp = await fetch(`https://prd-x-ademe-externe-api.de-c1.eu1.cloudhub.io/api/v1/pub/dpe/${dpeNumber}/xml`, {
-      headers: {
-        'client_id': 'f15319ce605e407581242b71425bbcb6',
-        'client_secret': '4d97b25a303b412eB968C26Aef30D933',
-        'Content-Type': 'application/json'
+    console.log("=== DÉBUT AUTO-FILL FORM ===");
+    console.log("Données reçues:", { dpeNumber, fiscalIncome, householdSize, occupancyStatus });
+
+    const { dpeData, rootXml } = await getDpeData(dpeNumber);
+
+    let packTravauxInfos = null;
+    const packTravauxCollection = rootXml.descriptif_travaux?.pack_travaux_collection?.pack_travaux;
+    if (packTravauxCollection) {
+      const packs = Array.isArray(packTravauxCollection) ? packTravauxCollection : [packTravauxCollection];
+      const pack = packs[0];
+      if (pack) {
+        packTravauxInfos = {
+          coutPackTravauxMin: pack.cout_pack_travaux_min ? Number(pack.cout_pack_travaux_min) : null,
+          coutPackTravauxMax: pack.cout_pack_travaux_max ? Number(pack.cout_pack_travaux_max) : null,
+          lots: [] as {
+            enum_lot_travaux_id: any,
+            description_travaux: any,
+            performance_recommande: any
+          }[],
+        };
+        const travauxCollection = pack.travaux_collection?.travaux;
+        if (travauxCollection) {
+          const travauxArr = Array.isArray(travauxCollection) ? travauxCollection : [travauxCollection];
+          packTravauxInfos.lots = travauxArr.map(t => ({
+            enum_lot_travaux_id: t.enum_lot_travaux_id ?? null,
+            description_travaux: t.description_travaux ?? null,
+            performance_recommande: t.performance_recommande ?? null,
+          }));
+        }
       }
-    });
-    if (!dpeResp.ok) {
-      throw new Error(`Erreur lors de la récupération du DPE: ${dpeResp.statusText}`);
     }
 
-    const xmlText = await dpeResp.text();
+    const session      = (await createIziSessionSvc()) as any;
+    let   currentStep  = session.currentStep;
+    let   incomeQuestion: any = null;
 
-    const parsedXml: any = await parseStringPromise(xmlText, {
-      explicitArray: false,
-      mergeAttrs: true,
-    });
+    const formData = await mapDpeToFormDataSvc(dpeData);
+    // Adapter le libellé du nombre d'habitants selon les choix IZI (1-6 ou « 7 et plus »)
+    let householdLabel = householdSize;
+    const hsNum = parseInt(String(householdSize ?? "").trim(), 10);
+    if (!isNaN(hsNum) && hsNum >= 7) householdLabel = "7 et plus";
 
-    const sheets = [
-      'administratif',
-      'logement',
-      'logement_sortie',
-      'rapport',
-      'lexique',
-    ];
-
-    const dpeData: DpeData = {
-      logement: [],
-      logement_sortie: [],
-      administratif: [],
-      rapport: [],
-      lexique: [],
+    const completeFormData = {
+      ...formData,
+      "Nombre d'habitants composant votre foyer fiscal": [String(householdLabel)],
+      "Par rapport au logement, vous êtes ?"           : [mapOccupancyStatusToLabel(occupancyStatus)],
     };
 
-    function flattenObjectToRows(
-      obj: any,
-      rows: any[][],
-      addEmptyFirstCol = false,
-    ) {
-      if (!obj) return;
-      Object.entries(obj).forEach(([key, value]) => {
-        if (value === null || value === undefined) return;
-        if (typeof value === 'object') {
-          flattenObjectToRows(value, rows, addEmptyFirstCol);
-        } else {
-          if (addEmptyFirstCol) {
-            rows.push(['', key, String(value)]);
-          } else {
-            rows.push([key, String(value)]);
-          }
-        }
+    console.log("=== QUESTIONS AUTO-REMPLIES ===");
+    Object.entries(completeFormData).forEach(([question, reponse]) => {
+      console.log(`Question: \"${question}\"`);
+      console.log(`Réponse: ${Array.isArray(reponse) ? reponse.join(", ") : reponse}`);
+      console.log("---");
+    });
+
+    const pick = (label: keyof typeof formData) =>
+      Array.isArray(formData[label]) ? formData[label][0] : formData[label];
+
+    const periodeConstruction = pick("L'année de construction du logement");
+    const typeGenerateur      = pick("Le type d'appareil de votre chauffage principal");
+    const typeVentilation     = pick("Quel est le type de ventilation ?");
+    const typeVitrage         = pick("Comment est le vitrage de vos fenêtres ?");
+    const materiauxMenuiserie = pick("Quel est le matériau de vos fenêtres ?");
+    const systemeEcs          = pick("Quel appareil produit votre eau chaude sanitaire ?");
+
+    
+    const { nextQuestion, stepId: pendingStepId, incomeQuestion: incQ } = await internalAutoFillLoop(currentStep, completeFormData);
+    incomeQuestion = incQ;
+
+    // Si une question nécessite l'intervention utilisateur, on renvoie immédiatement les infos nécessaires
+    if (nextQuestion) {
+      // Mémoriser le contexte pour la suite de la session
+      sessionsContext.set(session.id, {
+        completeFormData,
+        dpeData,
+        fiscalIncome,
+        incomeQuestion,
+        packTravauxInfos,
+      });
+
+      return res.status(200).json({
+        sessionId     : session.id,
+        nextQuestion  : {
+          stepId  : pendingStepId,
+          label   : nextQuestion.label,
+          type    : nextQuestion.type,
+          choices : nextQuestion.choices ?? [],
+        },
       });
     }
 
-    for (const sheet of sheets) {
-      const section = (parsedXml?.dpe && (parsedXml.dpe as any)[sheet]) || parsedXml[sheet];
-      if (section) {
-        const rows: any[][] = [];
-        flattenObjectToRows(section, rows, sheet === 'rapport');
-        dpeData[sheet as keyof DpeData] = rows;
-      }
-    }
+    console.log("=== FIN AUTO-FILL FORM ===");
 
-    const sessionData = await createIziSession();
-    const sessionId = sessionData.id;
-    let currentStep = sessionData.currentStep;
-    let incomeQuestion: any = null;
+    const summaryData = (await getSessionResult(session.id)) as Record<string, any>;
 
-    const formData = mapDpeToFormData(dpeData);
-    const completeFormData = {
-      ...formData,
-      "Nombre d'habitants composant votre foyer fiscal": [householdSize],
-      "Par rapport au logement, vous êtes ?": [mapOccupancyStatusToLabel(occupancyStatus)]
-    };
-
-    while (currentStep && currentStep.node && currentStep.node.question) {
-      if (currentStep.node.question.label === "Revenu annuel moyen de votre foyer fiscal") {
-        incomeQuestion = currentStep.node.question;
-        currentStep = currentStep.nextStep;
-        continue;
-      }
-
-      const questionLabel = currentStep.node.question.label.replace(':', '').trim();
-      const answer = completeFormData[questionLabel as keyof typeof completeFormData];
-
-      if (!answer) {
-        console.warn(`Pas de réponse trouvée pour la question: ${questionLabel}`);
-        break;
-      }
-
-      let answerBody: StepAnswer | null = null;
-
-      if (currentStep.node.question.type === "QuestionChoice") {
-        const matchingChoice = currentStep.node.question.choices.find(
-          (choice: any) => choice.label === answer[0]
-        );
-        if (matchingChoice) {
-          answerBody = { answer: [matchingChoice.id] };
-        }
-      } else if (currentStep.node.question.type === "QuestionInteger") {
-        const numericValue = parseFloat(Array.isArray(answer) ? answer[0] : answer);
-        if (!isNaN(numericValue)) {
-          answerBody = { answer: Math.round(numericValue) };
-        }
-      }
-
-      if (!answerBody) {
-        console.warn(`Pas de réponse valide pour la question: ${questionLabel}`);
-        break;
-      }
-
-      const stepData = await sendStepIziAnswer(currentStep.id, answerBody);
-      currentStep = stepData.nextStep;
-    }
-
-    const summaryResp = await fetch(`${IZI_API_URL}/sessions/${sessionId}/result`, {
-      headers: { "Authorization": IZI_AUTH_TOKEN },
-    });
-    if (!summaryResp.ok) {
-      throw new Error(`Erreur lors de la récupération du résumé: ${summaryResp.status}`);
-    }
-
-    const summaryData = await summaryResp.json();
-    const responses = {
-      ...summaryData,
-      "Code Postal": completeFormData["Code Postal"],
-      "Revenu annuel moyen de votre foyer fiscal": [mapFiscalIncomeToInterval(fiscalIncome, incomeQuestion?.choices || [])]
-    };
+    const responses: Record<string,any> = { ...completeFormData, ...summaryData };
+    responses["Code Postal"] = formData["Code Postal"];
+    responses["Revenu annuel moyen de votre foyer fiscal"] = [
+      mapFiscalIncomeToInterval(fiscalIncome, incomeQuestion?.choices || []),
+    ];
 
     const iRenovResp = await fetch(IRENOV_API_URL, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        accept: "application/json, text/plain",
-        "accept-language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
-      },
-      body: JSON.stringify(responses),
+      method : "POST",
+      headers: { "content-type": "application/json", accept: "application/json, text/plain" },
+      body   : JSON.stringify(responses),
     });
-
     if (!iRenovResp.ok) {
       const errorText = await iRenovResp.text();
-      throw new Error(`Erreur API iRenov: ${iRenovResp.status} - ${errorText}`);
+      throw new Error(`Erreur iRenov: ${iRenovResp.status} - ${errorText}`);
     }
-
     const finalData = await iRenovResp.json();
-    const metrics = extractDpeMetrics(dpeData);
+
+    const metrics = extractDpeMetricsSvc(dpeData);
 
     const relevantDpeData = {
-      codePostal: getValue(dpeData.administratif, "code_postal_brut"),
-      adresse: getValue(dpeData.administratif, "label_brut"),
-      periodeConstruction: getValue(dpeData.logement, "periode_construction"),
-      surfaceHabitable: getValue(dpeData.logement, "surface_habitable_logement"),
-      typeGenerateur: getValue(dpeData.logement, "type_generateur_ch"),
-      typeVentilation: getValue(dpeData.logement, "type_ventilation"),
-      typeVitrage: getValue(dpeData.logement, "type_vitrage"),
-      materiauxMenuiserie: getValue(dpeData.logement, "type_materiaux_menuiserie"),
-      nombreNiveaux: getValue(dpeData.logement, "nombre_niveau_logement"),
-      systemeEcs: getValueByColumn(dpeData.rapport, "système d'ecs", 1, 2),
+      numero_dpe: dpeNumber,
+      codePostal         : getValue(dpeData.administratif, "code_postal_brut"),
+      adresse            : getValue(dpeData.administratif, "label_brut"),
+      periodeConstruction: periodeConstruction,
+      surfaceHabitable   : getValue(dpeData.logement,      "surface_habitable_logement"),
+      typeGenerateur     : typeGenerateur,
+      typeVentilation    : typeVentilation,
+      typeVitrage        : typeVitrage,
+      materiauxMenuiserie: materiauxMenuiserie,
+      nombreNiveaux      : getValue(dpeData.logement,      "nombre_niveau_logement"),
+      systemeEcs         : systemeEcs,
+
       caracteristiques: {
-        taille: Math.round(Number(getValue(dpeData.logement, "surface_habitable_logement"))).toString(),
-        nombrePieces: 0,
-        nombreEtages: Number(getValue(dpeData.logement, "nombre_niveau_logement")),
+        taille        : Math.round(Number(getValue(dpeData.logement, "surface_habitable_logement") || 0)).toString(),
+        nombrePieces  : 0,
+        nombreEtages  : Number(getValue(dpeData.logement, "nombre_niveau_logement")),
       },
+
       quantites: {
-        murs: {
-          surfaces: metrics.wallSurfaces,
-          total: metrics.totalWallSurface,
-        },
-        fenetres: {
-          nombre: metrics.nbBays,
-          surface: metrics.totalBaySurface,
-        },
-        portes: {
-          surface: metrics.doorSurface || 0,
-        },
+        murs      : { surfaces: metrics.wallSurfaces, total: metrics.totalWallSurface },
+        fenetres  : { nombre  : metrics.nbBays,        surface: metrics.totalBaySurface },
+        portes    : { surface : metrics.doorSurface },
         ventilation: {
-          typeActuel: getValue(dpeData.logement, 'type_ventilation'),
-          surface: metrics.ventilatedSurface,
+          typeActuel: typeVentilation,
+          surface   : metrics.ventilatedSurface,
         },
-        chauffage: {
+        chauffage : {
           besoinKWh: metrics.heatingNeed,
-          perteWK: metrics.heatLossRate,
+          perteWK  : metrics.heatLossRate,
         },
       },
+    
       couts: {
-        chauffage: metrics.costs.heating,
-        ecs: metrics.costs.ecs,
-        eclairage: metrics.costs.lighting,
+        chauffage  : metrics.costs.heating,
+        ecs        : metrics.costs.ecs,
+        eclairage  : metrics.costs.lighting,
         auxiliaires: metrics.costs.aux,
-        autres: (Number(metrics.costs.lighting) + Number(metrics.costs.aux)).toString(),
-        total: (Number(metrics.costs.heating) + Number(metrics.costs.ecs) + Number(metrics.costs.lighting) + Number(metrics.costs.aux)).toString(),
+        autres     : (
+           Number(metrics.costs.lighting) +
+           Number(metrics.costs.aux)
+        ).toString(),
+        total: metrics.costs.total,
       },
+
+      conso: {
+        conso5UsagesAvantTravaux      : metrics.conso.conso5UsagesAvantTravaux,
+        emissionGes5UsagesAvantTravaux: metrics.conso.emissionGes5UsagesAvantTravaux,
+      },
+
       travaux: {
         pack: {
-          conso5UsagesApresTravaux: metrics.travaux.conso5UsagesApresTravaux,
+          conso5UsagesApresTravaux      : metrics.travaux.conso5UsagesApresTravaux,
           emissionGes5UsagesApresTravaux: metrics.travaux.emissionGes5UsagesApresTravaux,
+          ...(packTravauxInfos || {}),
         },
-      }
+      },
     };
 
+    
     return res.status(200).json({
       iziResponse: finalData,
-      dpeData: relevantDpeData,
-      sessionId: sessionId
+      dpeData    : relevantDpeData,
+      sessionId  : session.id,
     });
-  } catch (error: any) {
-    console.error('Erreur détaillée:', error);
-    return res.status(500).json({ 
-      error: 'Erreur lors du remplissage automatique du formulaire', 
-      details: error.message 
+
+  } catch (err: any) {
+    console.error("Erreur détaillée :", err);
+    return res.status(500).json({
+      error  : "Erreur lors du remplissage automatique du formulaire",
+      details: err.message,
     });
   }
 }
 
-function extractDpeMetrics(data: DpeData) {
-  const logementRows = data?.logement || [];
-  const logementSortieRows = data?.logement_sortie || [];
-  const rapportRows = data?.rapport || [];
+export async function createIziSessionHandler(req: Request, res: Response) {
+  try   { return res.json(await createIziSessionSvc()); }
+  catch (e:any) { return res.status(500).json({ error: e.message }); }
+}
 
-  const wallSurfaces = getValues(logementRows, 'surface_paroi_opaque').map(Number);
-  const totalWallSurface = wallSurfaces.reduce((s, n) => s + n, 0);
-
-  const baySurfaces = getValues(logementRows, 'surface_totale_baie').map(Number);
-  const totalBaySurface = baySurfaces.reduce((s, n) => s + n, 0);
-  const nbBays = getValues(logementRows, 'nb_baie').map(Number).reduce((s, n) => s + n, 0);
-
-  return {
-    wallSurfaces,
-    totalWallSurface,
-    baySurfaces,
-    totalBaySurface,
-    nbBays,
-    ventilatedSurface: Number(getValue(logementRows, 'surface_ventile')),
-    heatingNeed: Number(getValue(logementSortieRows, 'besoin_ch')),
-    heatLossRate: Number(getValue(logementSortieRows, 'deperdition_enveloppe')),
-    doorSurface: Number(getValue(logementRows, 'surface_porte')),
-    costs: {
-      heating: getValue(logementSortieRows, 'cout_ch'),
-      ecs: getValue(logementSortieRows, 'cout_ecs'),
-      lighting: getValue(logementSortieRows, 'cout_eclairage'),
-      aux: getValue(logementSortieRows, 'cout_total_auxiliaire'),
-    },
-    travaux: {
-      conso5UsagesApresTravaux: getValue(rapportRows, 'conso_5_usages_apres_travaux'),
-      emissionGes5UsagesApresTravaux: getValue(rapportRows, 'emission_ges_5_usages_apres_travaux'),
+export async function sendStepIziAnswerHandler(req: Request, res: Response) {
+  try {
+    const { stepId, answer, sessionId } = req.body;
+    if (!stepId || !answer || !sessionId) {
+      return res.status(400).json({ error: "stepId, sessionId et answer sont requis" });
     }
-  };
+
+    // envoyer la réponse de l'utilisateur à IZI
+    const firstStepData = await sendStepIziAnswerSvc(stepId, { answer });
+    let   currentStep   = firstStepData.nextStep;
+
+    const ctx = sessionsContext.get(sessionId);
+    if (!ctx) {
+      // Contexte absent : renvoyer simplement la réponse IZI brute
+      return res.json(firstStepData);
+    }
+
+    const { completeFormData, dpeData, fiscalIncome, incomeQuestion: storedIncomeQ, packTravauxInfos } = ctx;
+
+    // Reprendre la boucle d'auto-complétion
+    const { nextQuestion: nextQ2, stepId: pendingStepId2, incomeQuestion: incQ } = await internalAutoFillLoop(currentStep, completeFormData);
+
+    const incomeQuestion = incQ || storedIncomeQ;
+
+    // Si encore besoin de l'utilisateur → renvoyer la prochaine question
+    if (nextQ2) {
+      sessionsContext.set(sessionId, ctx); // Contexte inchangé, on garde
+      return res.status(200).json({
+        sessionId,
+        nextQuestion: {
+          stepId  : pendingStepId2,
+          label   : nextQ2.label,
+          type    : nextQ2.type,
+          choices : nextQ2.choices ?? [],
+        },
+      });
+    }
+
+    // Plus aucune question : on finalize comme dans autoFillForm
+
+    const summaryData = (await getSessionResult(sessionId)) as Record<string, any>;
+
+    const responses: Record<string,any> = { ...completeFormData, ...summaryData };
+    responses["Revenu annuel moyen de votre foyer fiscal"] = [
+      mapFiscalIncomeToInterval(fiscalIncome, incomeQuestion?.choices || [])
+    ];
+
+    const iRenovResp = await fetch(IRENOV_API_URL, {
+      method : "POST",
+      headers: { "content-type": "application/json", accept: "application/json, text/plain" },
+      body   : JSON.stringify(responses),
+    });
+
+    if (!iRenovResp.ok) {
+      const errorText = await iRenovResp.text();
+      throw new Error(`Erreur iRenov: ${iRenovResp.status} - ${errorText}`);
+    }
+
+    const finalData = await iRenovResp.json();
+
+    const metrics = extractDpeMetricsSvc(dpeData);
+
+    const relevantDpeData = {
+      numero_dpe: dpeData?.numero_dpe ?? "",
+      codePostal         : getValue(dpeData.administratif, "code_postal_brut"),
+      adresse            : getValue(dpeData.administratif, "label_brut"),
+      periodeConstruction: completeFormData["L'année de construction du logement"]?.[0] ?? "",
+      surfaceHabitable   : getValue(dpeData.logement,      "surface_habitable_logement"),
+      typeGenerateur     : completeFormData["Le type d'appareil de votre chauffage principal"]?.[0] ?? "",
+      typeVentilation    : completeFormData["Quel est le type de ventilation ?"]?.[0] ?? "",
+      typeVitrage        : completeFormData["Comment est le vitrage de vos fenêtres ?"]?.[0] ?? "",
+      materiauxMenuiserie: completeFormData["Quel est le matériau de vos fenêtres ?"]?.[0] ?? "",
+      nombreNiveaux      : getValue(dpeData.logement,      "nombre_niveau_logement"),
+      systemeEcs         : completeFormData["Quel appareil produit votre eau chaude sanitaire ?"]?.[0] ?? "",
+
+      caracteristiques: {
+        taille        : Math.round(Number(getValue(dpeData.logement, "surface_habitable_logement") || 0)).toString(),
+        nombrePieces  : 0,
+        nombreEtages  : Number(getValue(dpeData.logement, "nombre_niveau_logement")),
+      },
+
+      quantites: {
+        murs      : { surfaces: metrics.wallSurfaces, total: metrics.totalWallSurface },
+        fenetres  : { nombre  : metrics.nbBays,        surface: metrics.totalBaySurface },
+        portes    : { surface : metrics.doorSurface },
+        ventilation: {
+          typeActuel: completeFormData["Quel est le type de ventilation ?"]?.[0] ?? "",
+          surface   : metrics.ventilatedSurface,
+        },
+        chauffage : {
+          besoinKWh: metrics.heatingNeed,
+          perteWK  : metrics.heatLossRate,
+        },
+      },
+    
+      couts: {
+        chauffage  : metrics.costs.heating,
+        ecs        : metrics.costs.ecs,
+        eclairage  : metrics.costs.lighting,
+        auxiliaires: metrics.costs.aux,
+        autres     : (
+           Number(metrics.costs.lighting) +
+           Number(metrics.costs.aux)
+        ).toString(),
+        total: metrics.costs.total,
+      },
+
+      conso: {
+        conso5UsagesAvantTravaux      : metrics.conso.conso5UsagesAvantTravaux,
+        emissionGes5UsagesAvantTravaux: metrics.conso.emissionGes5UsagesAvantTravaux,
+      },
+
+      travaux: {
+        pack: {
+          conso5UsagesApresTravaux      : metrics.travaux.conso5UsagesApresTravaux,
+          emissionGes5UsagesApresTravaux: metrics.travaux.emissionGes5UsagesApresTravaux,
+          ...(packTravauxInfos || {}),
+        },
+      },
+    };
+
+    // La session est terminée, on peut supprimer le contexte pour libérer la mémoire
+    sessionsContext.delete(sessionId);
+
+    return res.json({
+      iziResponse: finalData,
+      dpeData    : relevantDpeData,
+      sessionId  : sessionId,
+    });
+  } catch (e:any) {
+    return res.status(500).json({ error: e.message });
+  }
+}
+
+export async function getQuizSummary(req: Request, res: Response) {
+  const { sessionId } = req.params;
+  const resp = await fetch(`${IZI_API_URL}/sessions/${sessionId}/result`, {
+    headers: { Authorization: IZI_AUTH_TOKEN },
+  });
+  if (!resp.ok) return res.status(500).json({ error: "Erreur getQuizSummary " + resp.statusText });
+  return res.status(200).json(await resp.json());
+}
+
+export async function getQuizResults(req: Request, res: Response) {
+  try {
+    const { responses } = req.body;
+    const r = await fetch(IRENOV_API_URL, {
+      method : "POST",
+      headers: { "content-type": "application/json" },
+      body   : JSON.stringify(responses),
+    });
+    if (!r.ok) throw new Error(r.statusText);
+    return res.status(200).json(await r.json());
+  } catch (e:any) {
+    return res.status(500).json({ error: "Erreur getQuizResults " + e });
+  }
 }
