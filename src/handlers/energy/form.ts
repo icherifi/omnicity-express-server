@@ -63,7 +63,7 @@ async function internalAutoFillLoop(currentStep: any, completeFormData: Record<s
   return { lastStep: currentStep, incomeQuestion };
 }
 
-export async function autoFillForm(req: Request, res: Response) {
+export const autoFillForm = async (req: Request, res: Response) => {
   try {
     const { dpeNumber, fiscalIncome, householdSize, occupancyStatus } = req.body;
     if (!dpeNumber) return res.status(400).json({ error: "Le numéro de DPE est requis" });
@@ -255,14 +255,14 @@ export async function autoFillForm(req: Request, res: Response) {
       details: err.message,
     });
   }
-}
+};
 
-export async function createIziSessionHandler(req: Request, res: Response) {
+export const createIziSessionHandler = async (req: Request, res: Response) => {
   try   { return res.json(await createIziSessionSvc()); }
   catch (e:any) { return res.status(500).json({ error: e.message }); }
-}
+};
 
-export async function sendStepIziAnswerHandler(req: Request, res: Response) {
+export const sendStepIziAnswerHandler = async (req: Request, res: Response) => {
   try {
     const { stepId, answer, sessionId } = req.body;
     if (!stepId || !answer || !sessionId) {
@@ -394,18 +394,18 @@ export async function sendStepIziAnswerHandler(req: Request, res: Response) {
   } catch (e:any) {
     return res.status(500).json({ error: e.message });
   }
-}
+};
 
-export async function getQuizSummary(req: Request, res: Response) {
+export const getQuizSummary = async (req: Request, res: Response) => {
   const { sessionId } = req.params;
   const resp = await fetch(`${IZI_API_URL}/sessions/${sessionId}/result`, {
     headers: { Authorization: IZI_AUTH_TOKEN },
   });
   if (!resp.ok) return res.status(500).json({ error: "Erreur getQuizSummary " + resp.statusText });
   return res.status(200).json(await resp.json());
-}
+};
 
-export async function getQuizResults(req: Request, res: Response) {
+export const getQuizResults = async (req: Request, res: Response) => {
   try {
     const { responses } = req.body;
     const r = await fetch(IRENOV_API_URL, {
@@ -418,4 +418,4 @@ export async function getQuizResults(req: Request, res: Response) {
   } catch (e:any) {
     return res.status(500).json({ error: "Erreur getQuizResults " + e });
   }
-}
+};
