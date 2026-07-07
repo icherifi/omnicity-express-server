@@ -16,13 +16,13 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 type Project = Database['public']['Tables']['projects']['Row'];
 
 export const createProject = async (req: Request, res: Response) => {
-  const { id_bouquet, id_design, address, state, name, firstName, lastName, contract_type, features } = req.body as any;
+  const { id_bouquet, id_design, address, state, name, firstName, lastName, contract_type, features, initial_state } = req.body as any;
   const userId = res.locals.user.id;
 
   const { data, error } = await supabase
     .from('projects')
     .insert([
-      { id_bouquet, id_design, address, state, name, firstName, lastName, contract_type, features, created_by: userId }
+      { id_bouquet, id_design, address, state, name, firstName, lastName, contract_type, features, initial_state, created_by: userId }
     ])
 
   if (error) {
@@ -55,7 +55,10 @@ export const getProjects = async (req: Request, res: Response) => {
     
     const { data: projects, error: errorProjects } = await supabase
       .from("projects")
-      .select("*")
+      .select(`
+        *,
+        energy_choices(id, strategy, choice)
+      `)
       .eq("created_by", userId);
     
     if (errorProjects) {
@@ -67,16 +70,6 @@ export const getProjects = async (req: Request, res: Response) => {
     }
 
     const projectIds = projects.map((p) => p.id);
-    const bouquetIds = projects.map((p) => p.id_bouquet).filter(Boolean);
-
-    const { data: energies, error: errorEnergies } = await supabase
-      .from("energy")
-      .select("id_project, izi_response")
-      .in("id_project", projectIds);
-    
-    if (errorEnergies) {
-      return res.status(400).json({ error: errorEnergies.message });
-    }
 
     const { data: dpeData, error: errorDpe } = await supabase
       .from("dpe")
@@ -87,59 +80,32 @@ export const getProjects = async (req: Request, res: Response) => {
       return res.status(400).json({ error: errorDpe.message });
     }
 
-    let energyChoices: any[] = [];
-    if (bouquetIds.length > 0) {
-      const { data: choices, error: errorChoices } = await supabase
-        .from("energy_choices")
-        .select("id_project, choice")
-        .in("id_project", bouquetIds);
-      
-      if (errorChoices) {
-        return res.status(400).json({ error: errorChoices.message });
-      }
-      energyChoices = choices ?? [];
-    }
-
-    const energyByProjectId: Record<number, any> = {};
-    (energies ?? []).forEach((e) => {
-      energyByProjectId[e.id_project] = e;
-    });
-
     const dpeByProjectId: Record<number, any> = {};
     (dpeData ?? []).forEach((d) => {
       dpeByProjectId[d.id_project] = d;
     });
 
-    const choiceByBouquetId: Record<string, any> = {};
-    energyChoices.forEach((c) => {
-      choiceByBouquetId[c.id_project] = c;
-    });
-
     const combined = projects.map((project) => {
-      const energyRow = energyByProjectId[project.id];
       const dpeRow = dpeByProjectId[project.id];
-      const choiceRow = project.id_bouquet
-        ? choiceByBouquetId[project.id_bouquet]
-        : null;
+      const choiceRow = project.energy_choices;
       
       return {
         ...project,
-        iziResponse: energyRow?.izi_response,
+        strategy: choiceRow?.strategy,
         energyMixChoice: choiceRow?.choice,
         dpe: dpeRow,
         stateOfPlay: project.description,
-        costEstimation: choiceRow
+        costEstimation: choiceRow?.choice
           ? {
               withAid: choiceRow.choice.resteACharge,
               withoutAid: choiceRow.choice.coutTotal,
             }
           : undefined,
-        targetedEnergyRating: choiceRow
+        targetedEnergyRating: choiceRow?.choice
           ? choiceRow.choice.etiquette
           : undefined,
-        actualEnergyRating: energyRow
-          ? energyRow.izi_response.etiquetteInitial
-          : undefined,
+        actualEnergyRating: undefined, // Plus d'energy table
+        energy_choices: undefined, // On retire cette propriété de la réponse
       };
     });
 
@@ -184,6 +150,8 @@ export const updateProject = async (req: Request, res: Response) => {
     lastName,
     contract_type,
     features,
+    id_energy_choices,
+    initial_state,
   } = req.body as any;
   const userId = res.locals.user.id;
 
@@ -198,6 +166,8 @@ export const updateProject = async (req: Request, res: Response) => {
     lastName,
     contract_type,
     features,
+    id_energy_choices,
+    initial_state,
   };
 
   const updateFields = Object.fromEntries(
@@ -208,7 +178,6 @@ export const updateProject = async (req: Request, res: Response) => {
     .from('projects')
     .update(updateFields)
     .eq('id', projectId)
-    .eq('created_by', userId);
 
   if (error) {
     return res.status(400).json({ error: error.message });
