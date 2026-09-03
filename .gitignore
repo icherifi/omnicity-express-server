@@ -23,4 +23,7 @@ benchmarks/graphs
 # Dist
 dist
 
+# Supabase CLI
+supabase/.temp
+
 temp.js

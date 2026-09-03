@@ -187,6 +187,7 @@ export type Database = {
           id: number
           project_id: string | null
           serialized: Json | null
+          usdz_path: string | null
         }
         Insert: {
           author?: string | null
@@ -195,6 +196,7 @@ export type Database = {
           id?: string
           project_id?: string | null
           serialized?: Json | null
+          usdz_path?: string | null
         }
         Update: {
           author?: string | null
@@ -203,6 +205,7 @@ export type Database = {
           id?: string
           project_id?: string | null
           serialized?: Json | null
+          usdz_path?: string | null
         }
         Relationships: [
           {

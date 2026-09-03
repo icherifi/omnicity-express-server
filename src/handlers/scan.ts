@@ -14,7 +14,7 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 type Scan = Database['public']['Tables']['scans']['Row'];
 
 export const createScan = async (req: Request, res: Response) => {
-  const { author, created_at, description, id, serialized }: Scan = req.body;
+  const { author, created_at, description, id, project_id, serialized, usdz_path }: Scan = req.body;
 
   const { error } = await supabase
     .from('scans')
@@ -23,7 +23,9 @@ export const createScan = async (req: Request, res: Response) => {
       created_at: created_at,
       description: description,
       id: id,
-      serialized: serialized
+      project_id: project_id,
+      serialized: serialized,
+      usdz_path: usdz_path
     });
 
   if (error) {
