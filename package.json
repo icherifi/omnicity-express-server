@@ -13,6 +13,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.123.0",
     "@supabase/supabase-js": "^2.45.2",
     "@types/node-fetch": "^2.6.12",
     "@types/xml2js": "^0.4.14",

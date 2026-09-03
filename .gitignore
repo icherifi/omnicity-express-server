@@ -27,3 +27,9 @@ dist
 supabase/.temp
 
 temp.js
+
+# Blender bridge (Python service deployed to the VM)
+blender-bridge/.env
+blender-bridge/sessions
+blender-bridge/ikea_cache
+blender-bridge/__pycache__

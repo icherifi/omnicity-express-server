@@ -187,6 +187,10 @@ export type Database = {
           id: number
           project_id: string | null
           serialized: Json | null
+          staged_at: string | null
+          staged_usdz_path: string | null
+          staging_status: string
+          staging_summary: Json | null
           usdz_path: string | null
         }
         Insert: {
@@ -196,6 +200,10 @@ export type Database = {
           id?: string
           project_id?: string | null
           serialized?: Json | null
+          staged_at?: string | null
+          staged_usdz_path?: string | null
+          staging_status?: string
+          staging_summary?: Json | null
           usdz_path?: string | null
         }
         Update: {
@@ -205,6 +213,10 @@ export type Database = {
           id?: string
           project_id?: string | null
           serialized?: Json | null
+          staged_at?: string | null
+          staged_usdz_path?: string | null
+          staging_status?: string
+          staging_summary?: Json | null
           usdz_path?: string | null
         }
         Relationships: [
