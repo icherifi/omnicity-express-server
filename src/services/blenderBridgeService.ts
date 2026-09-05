@@ -1,5 +1,10 @@
 import { IkeaImportResult, IkeaProduct, IkeaSearchResult, MaterialCatalog, SceneInspection } from "../types/staging.types";
 
+// A hung fetch here has no default timeout in Node and would otherwise wait forever,
+// leaving a staging run stuck in "processing" with nothing left to ever mark it
+// "error" - bound every call explicitly instead of trusting an unbounded default.
+const BRIDGE_TIMEOUT_MS = 180_000;
+
 function bridgeUrl() {
   const url = process.env.BLENDER_BRIDGE_URL;
   if (!url) throw new Error("Missing BLENDER_BRIDGE_URL environment variable");
@@ -15,6 +20,10 @@ function bridgeHeaders() {
   };
 }
 
+function bridgeFetch(url: string, init: RequestInit = {}) {
+  return fetch(url, { ...init, signal: AbortSignal.timeout(BRIDGE_TIMEOUT_MS) });
+}
+
 async function parseOrThrow(res: Response, context: string) {
   if (!res.ok) {
     const body = await res.text().catch(() => "");
@@ -25,7 +34,7 @@ async function parseOrThrow(res: Response, context: string) {
 
 /** Import the USDZ on the VM and return a session id plus a description of the scanned room. */
 export async function inspectScene(usdzUrl: string): Promise<SceneInspection> {
-  const res = await fetch(`${bridgeUrl()}/inspect`, {
+  const res = await bridgeFetch(`${bridgeUrl()}/inspect`, {
     method: "POST",
     headers: bridgeHeaders(),
     body: JSON.stringify({ usdz_url: usdzUrl }),
@@ -38,7 +47,7 @@ export async function executeScript(
   sessionId: string,
   code: string
 ): Promise<{ output: string; success: boolean }> {
-  const res = await fetch(`${bridgeUrl()}/execute`, {
+  const res = await bridgeFetch(`${bridgeUrl()}/execute`, {
     method: "POST",
     headers: bridgeHeaders(),
     body: JSON.stringify({ session_id: sessionId, code }),
@@ -48,7 +57,7 @@ export async function executeScript(
 
 /** Live-search IKEA's catalog (ikea.com) for candidate products. */
 export async function searchIkea(query: string): Promise<IkeaSearchResult[]> {
-  const res = await fetch(`${bridgeUrl()}/ikea/search?${new URLSearchParams({ q: query })}`, {
+  const res = await bridgeFetch(`${bridgeUrl()}/ikea/search?${new URLSearchParams({ q: query })}`, {
     headers: bridgeHeaders(),
   });
   return parseOrThrow(res, "ikea/search") as Promise<IkeaSearchResult[]>;
@@ -56,7 +65,7 @@ export async function searchIkea(query: string): Promise<IkeaSearchResult[]> {
 
 /** Fetch the raw IKEA product-info-page JSON for one item (price, style, type, images...). */
 export async function getIkeaProduct(itemNo: string): Promise<IkeaProduct> {
-  const res = await fetch(`${bridgeUrl()}/ikea/product/${encodeURIComponent(itemNo)}`, {
+  const res = await bridgeFetch(`${bridgeUrl()}/ikea/product/${encodeURIComponent(itemNo)}`, {
     headers: bridgeHeaders(),
   });
   return parseOrThrow(res, "ikea/product") as Promise<IkeaProduct>;
@@ -78,7 +87,7 @@ export async function placeOrReplaceIkeaItem(
     replaceObjectNames?: string[];
   }
 ): Promise<IkeaImportResult> {
-  const res = await fetch(`${bridgeUrl()}/ikea/import`, {
+  const res = await bridgeFetch(`${bridgeUrl()}/ikea/import`, {
     method: "POST",
     headers: bridgeHeaders(),
     body: JSON.stringify({
@@ -94,13 +103,13 @@ export async function placeOrReplaceIkeaItem(
 
 /** Fetch the curated wall/floor material catalog (floor entries include absolute texture paths on the VM). */
 export async function getMaterials(): Promise<MaterialCatalog> {
-  const res = await fetch(`${bridgeUrl()}/materials`, { headers: bridgeHeaders() });
+  const res = await bridgeFetch(`${bridgeUrl()}/materials`, { headers: bridgeHeaders() });
   return parseOrThrow(res, "materials") as Promise<MaterialCatalog>;
 }
 
 /** Render a preview image of the current scene state. Returns a URL the bridge serves it from. */
 export async function renderPreview(sessionId: string): Promise<{ file_url: string }> {
-  const res = await fetch(`${bridgeUrl()}/render`, {
+  const res = await bridgeFetch(`${bridgeUrl()}/render`, {
     method: "POST",
     headers: bridgeHeaders(),
     body: JSON.stringify({ session_id: sessionId }),
@@ -110,7 +119,7 @@ export async function renderPreview(sessionId: string): Promise<{ file_url: stri
 
 /** Export the final staged scene as USDZ. Returns a URL the bridge serves it from. */
 export async function exportScene(sessionId: string): Promise<{ file_url: string }> {
-  const res = await fetch(`${bridgeUrl()}/export`, {
+  const res = await bridgeFetch(`${bridgeUrl()}/export`, {
     method: "POST",
     headers: bridgeHeaders(),
     body: JSON.stringify({ session_id: sessionId, format: "usdz" }),
@@ -120,7 +129,7 @@ export async function exportScene(sessionId: string): Promise<{ file_url: string
 
 /** Download a file the bridge served (from renderPreview/exportScene) so it can be re-uploaded to Supabase storage. */
 export async function downloadBridgeFile(fileUrl: string): Promise<{ buffer: Buffer; contentType: string }> {
-  const res = await fetch(fileUrl, { headers: bridgeHeaders() });
+  const res = await bridgeFetch(fileUrl, { headers: bridgeHeaders() });
   if (!res.ok) {
     throw new Error(`Failed to download ${fileUrl} from Blender bridge (${res.status})`);
   }

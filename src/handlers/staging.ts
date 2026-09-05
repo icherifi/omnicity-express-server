@@ -49,7 +49,13 @@ export const startStaging = async (req: Request, res: Response) => {
     return res.status(409).json({ error: `Staging already ${scan.staging_status}` });
   }
 
-  await supabase.from('scans').update({ staging_status: 'processing' }).eq('id', id);
+  // Clear any previous attempt's summary/error — otherwise a client polling mid-run sees
+  // "processing" alongside a stale error from the last failed attempt and (reasonably)
+  // reads that as the current state.
+  await supabase
+    .from('scans')
+    .update({ staging_status: 'processing', staging_summary: null, staged_usdz_path: null })
+    .eq('id', id);
   res.status(202).json({ message: 'Staging started', staging_status: 'processing' });
 
   try {

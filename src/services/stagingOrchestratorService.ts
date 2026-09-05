@@ -16,7 +16,10 @@ const MAX_TOOL_ROUNDS = 25;
 function anthropicClient() {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error("Missing ANTHROPIC_API_KEY environment variable");
-  return new Anthropic({ apiKey });
+  // A hung request here previously left a scan stuck in "processing" forever - nothing
+  // ever reached the catch block in staging.ts to mark it "error". Bound it explicitly
+  // rather than trust an unbounded default.
+  return new Anthropic({ apiKey, timeout: 120_000 });
 }
 
 function buildTools(materials: MaterialCatalog): Anthropic.Tool[] {
