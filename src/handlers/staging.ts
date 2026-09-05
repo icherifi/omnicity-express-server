@@ -78,10 +78,15 @@ export const startStaging = async (req: Request, res: Response) => {
       .from(DOCUMENTS_BUCKET)
       .upload(previewPath, preview.buffer, { contentType: preview.contentType, upsert: true });
 
+    // Reaching this line means the tool loop, render, and export all succeeded -
+    // summary.errors just lists non-fatal hiccups Claude already worked around
+    // along the way (e.g. an IKEA item with no product page, a bad model download).
+    // Flagging a run with a real staged.usdz as "error" because of those was wrong -
+    // it hid a fully successful 16-item run behind an error screen.
     await supabase
       .from('scans')
       .update({
-        staging_status: summary.errors.length > 0 ? 'error' : 'done',
+        staging_status: 'done',
         staged_usdz_path: stagedPath,
         staging_summary: { ...summary, preview_render_path: previewPath } as any,
         staged_at: new Date().toISOString(),
