@@ -38,6 +38,8 @@ ikea = IkeaApiWrapper(os.environ.get("IKEA_COUNTRY", "fr"), os.environ.get("IKEA
 ikea.cache_dir = Path(os.environ.get("IKEA_CACHE_DIR", "ikea_cache"))
 ikea.cache_dir.mkdir(parents=True, exist_ok=True)
 
+MATERIALS_DIR = Path(__file__).parent / "materials"
+
 app = FastAPI(title="blender-bridge")
 
 
@@ -73,7 +75,12 @@ class IkeaImportRequest(BaseModel):
     item_no: str
     position: list[float]
     rotation_z_degrees: float
-    replace_object_name: str | None = None
+    # Everything CURRENTLY occupying the slot being replaced - not necessarily the
+    # original scan object's own name. A slot replaced once already is occupied by
+    # whatever object_names the previous import produced (often several mesh parts),
+    # not the long-gone original name. The caller (stagingOrchestratorService) tracks
+    # this so a second replace of the same slot actually removes the first one.
+    replace_object_names: list[str] | None = None
 
 
 INSPECT_SCRIPT_TEMPLATE = """
@@ -133,7 +140,11 @@ for obj in bpy.context.scene.objects:
     if category in SKIP_CATEGORIES:
         continue
 
-    dims_cm = [(bmax[0] - bmin[0]) * 100, (bmax[1] - bmin[1]) * 100, (bmax[2] - bmin[2]) * 100]
+    # obj.dimensions is the object's own oriented bounding box (local size x scale) -
+    # unlike a world-space AABB from bound_box corners, it does NOT inflate when the
+    # object is rotated to a non-axis-aligned angle, matching RoomPlan's own
+    # "dimensions" convention for the same objects.
+    dims_cm = [obj.dimensions.x * 100, obj.dimensions.y * 100, obj.dimensions.z * 100]
     loc = obj.matrix_world.translation
     rot_z = math.degrees(obj.matrix_world.to_euler().z)
 
@@ -205,10 +216,17 @@ IKEA_IMPORT_SCRIPT_TEMPLATE = """
 import json
 import mathutils
 
+def world_bbox(obj):
+    corners = [obj.matrix_world @ mathutils.Vector(c) for c in obj.bound_box]
+    xs = [c.x for c in corners]
+    ys = [c.y for c in corners]
+    zs = [c.z for c in corners]
+    return (min(xs), min(ys), min(zs)), (max(xs), max(ys), max(zs))
+
 existing = set(bpy.data.objects)
 
-replace_name = {replace_object_name!r}
-if replace_name:
+replace_names = {replace_object_names!r} or []
+for replace_name in replace_names:
     obj = bpy.data.objects.get(replace_name)
     if obj is not None:
         bpy.data.objects.remove(obj, do_unlink=True)
@@ -218,6 +236,25 @@ imported = [o for o in bpy.data.objects if o not in existing]
 imported_names = set(o.name for o in imported)
 top_level = [o for o in imported if o.parent is None or o.parent.name not in imported_names]
 
+# Measure BEFORE moving/rotating: a world-space AABB taken after rotating to a
+# non-axis-aligned angle inflates apparent size, same bug as the room inspection
+# had. At this point the import's own authored (typically axis-aligned) transform
+# is still in effect, so this is the model's true oriented size.
+overall_min = [float("inf")] * 3
+overall_max = [float("-inf")] * 3
+for obj in imported:
+    if obj.type != 'MESH':
+        continue
+    bmin, bmax = world_bbox(obj)
+    for i in range(3):
+        overall_min[i] = min(overall_min[i], bmin[i])
+        overall_max[i] = max(overall_max[i], bmax[i])
+
+if overall_min[0] == float("inf"):
+    dims_cm = [0, 0, 0]
+else:
+    dims_cm = [(overall_max[i] - overall_min[i]) * 100 for i in range(3)]
+
 for obj in top_level:
     obj.location = ({x}, {y}, {z})
     obj.rotation_euler = (0, 0, math.radians({rotation_z}))
@@ -225,23 +262,51 @@ for obj in top_level:
 for obj in imported:
     obj["ikeaItemNo"] = {item_no!r}
 
-overall_min = [float("inf")] * 3
-overall_max = [float("-inf")] * 3
-for obj in imported:
-    if obj.type != 'MESH':
-        continue
-    for corner in obj.bound_box:
-        world_corner = obj.matrix_world @ mathutils.Vector(corner)
+# matrix_world doesn't update immediately after setting location/rotation_euler in a
+# background script (no viewport redraw to trigger it) - force it now, or world_bbox()
+# below would still see each object's stale pre-move transform.
+bpy.context.view_layer.update()
+
+# Now that the item sits at its FINAL position/rotation, check whether its footprint
+# overlaps any other furniture (not walls/floor/ceiling - touching those is normal).
+# A small volume threshold ignores incidental contact (e.g. a lamp's base touching a
+# table it sits on); it can't tell "colliding" from "legitimately stacked" beyond that,
+# so this is reported to the caller as a warning to weigh, not a hard failure.
+import re
+
+def base_category(name):
+    return re.sub(r'\\d+$', '', name).lower()
+
+NON_FURNITURE_CATEGORIES = {{"wall", "floor", "ceiling"}}
+OVERLAP_VOLUME_THRESHOLD_M3 = 0.01
+
+new_min, new_max = list(overall_min), list(overall_max)
+if top_level:
+    new_min, new_max = list(world_bbox(top_level[0])[0]), list(world_bbox(top_level[0])[1])
+    for obj in top_level[1:]:
+        bmin, bmax = world_bbox(obj)
         for i in range(3):
-            overall_min[i] = min(overall_min[i], world_corner[i])
-            overall_max[i] = max(overall_max[i], world_corner[i])
+            new_min[i] = min(new_min[i], bmin[i])
+            new_max[i] = max(new_max[i], bmax[i])
 
-if overall_min[0] == float("inf"):
-    dims_cm = [0, 0, 0]
-else:
-    dims_cm = [(overall_max[i] - overall_min[i]) * 100 for i in range(3)]
+imported_set = set(o.name for o in imported)
+overlapping = []
+for obj in bpy.context.scene.objects:
+    if obj.type != 'MESH' or obj.name in imported_set:
+        continue
+    if base_category(obj.name) in NON_FURNITURE_CATEGORIES:
+        continue
+    bmin, bmax = world_bbox(obj)
+    overlap_extent = [max(0.0, min(new_max[i], bmax[i]) - max(new_min[i], bmin[i])) for i in range(3)]
+    overlap_volume = overlap_extent[0] * overlap_extent[1] * overlap_extent[2]
+    if overlap_volume > OVERLAP_VOLUME_THRESHOLD_M3:
+        overlapping.append(obj.name)
 
-result = {{"object_names": [o.name for o in imported], "dimensions_cm": dims_cm}}
+result = {{
+    "object_names": [o.name for o in imported],
+    "dimensions_cm": dims_cm,
+    "overlapping_object_names": overlapping,
+}}
 bpy.ops.wm.save_as_mainfile(filepath={working_blend!r})
 print("IMPORT_RESULT_JSON:" + json.dumps(result))
 """
@@ -349,6 +414,16 @@ def ikea_product(item_no: str, _auth=Depends(require_api_key)):
         raise HTTPException(502, str(e))
 
 
+def _ikea_import_failure(output: str):
+    return {
+        "output": output,
+        "success": False,
+        "object_names": [],
+        "dimensions_cm": [0, 0, 0],
+        "overlapping_object_names": [],
+    }
+
+
 @app.post("/ikea/import")
 def ikea_import(req: IkeaImportRequest, _auth=Depends(require_api_key)):
     sdir = session_dir(req.session_id)
@@ -358,10 +433,10 @@ def ikea_import(req: IkeaImportRequest, _auth=Depends(require_api_key)):
     try:
         glb_path = ikea.get_model(item_no)
     except IkeaException as e:
-        return {"output": str(e), "success": False, "object_names": [], "dimensions_cm": [0, 0, 0]}
+        return _ikea_import_failure(str(e))
 
     script = IKEA_IMPORT_SCRIPT_TEMPLATE.format(
-        replace_object_name=req.replace_object_name,
+        replace_object_names=req.replace_object_names,
         glb_path=str(Path(glb_path).resolve()),
         x=req.position[0],
         y=req.position[1],
@@ -374,15 +449,37 @@ def ikea_import(req: IkeaImportRequest, _auth=Depends(require_api_key)):
     try:
         output = run_script(script, blend_file=working_blend)
     except BlenderScriptError as e:
-        return {"output": str(e), "success": False, "object_names": [], "dimensions_cm": [0, 0, 0]}
+        return _ikea_import_failure(str(e))
 
     marker = "IMPORT_RESULT_JSON:"
     line = next((l for l in output.splitlines() if l.startswith(marker)), None)
     if line is None:
-        return {"output": output, "success": False, "object_names": [], "dimensions_cm": [0, 0, 0]}
+        return _ikea_import_failure(output)
 
     result = json.loads(line[len(marker):])
-    return {"output": output, "success": True, "object_names": result["object_names"], "dimensions_cm": result["dimensions_cm"]}
+    return {
+        "output": output,
+        "success": True,
+        "object_names": result["object_names"],
+        "dimensions_cm": result["dimensions_cm"],
+        "overlapping_object_names": result["overlapping_object_names"],
+    }
+
+
+@app.get("/materials")
+def materials(_auth=Depends(require_api_key)):
+    manifest = json.loads((MATERIALS_DIR / "manifest.json").read_text(encoding="utf-8"))
+
+    floors = []
+    for floor in manifest["floors"]:
+        floors.append({
+            **{k: v for k, v in floor.items() if k not in ("diffuse", "normal", "roughness")},
+            "diffuse_path": str((MATERIALS_DIR / floor["diffuse"]).resolve()),
+            "normal_path": str((MATERIALS_DIR / floor["normal"]).resolve()),
+            "roughness_path": str((MATERIALS_DIR / floor["roughness"]).resolve()),
+        })
+
+    return {"floors": floors, "walls": manifest["walls"]}
 
 
 @app.get("/files/{session_id}/{filename}")

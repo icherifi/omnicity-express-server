@@ -4,6 +4,7 @@ import dotenv from 'dotenv';
 import { Database } from '../types/database.types';
 import { runStaging } from '../services/stagingOrchestratorService';
 import { downloadBridgeFile } from '../services/blenderBridgeService';
+import { RoomPlanCapturedRoom } from '../types/staging.types';
 
 dotenv.config();
 const supabaseUrl = process.env.SUPABASE_URL;
@@ -48,7 +49,11 @@ export const startStaging = async (req: Request, res: Response) => {
   res.status(202).json({ message: 'Staging started', staging_status: 'processing' });
 
   try {
-    const { summary, exportFileUrl, previewFileUrl } = await runStaging(publicUsdzUrl(scan.usdz_path));
+    const serialized: RoomPlanCapturedRoom | undefined = scan.serialized
+      ? ((typeof scan.serialized === 'string' ? JSON.parse(scan.serialized) : scan.serialized) as RoomPlanCapturedRoom)
+      : undefined;
+
+    const { summary, exportFileUrl, previewFileUrl } = await runStaging(publicUsdzUrl(scan.usdz_path), serialized);
 
     const staged = await downloadBridgeFile(exportFileUrl);
     const stagedPath = `staging/${id}/staged.usdz`;

@@ -1,4 +1,4 @@
-import { IkeaImportResult, IkeaProduct, IkeaSearchResult, SceneInspection } from "../types/staging.types";
+import { IkeaImportResult, IkeaProduct, IkeaSearchResult, MaterialCatalog, SceneInspection } from "../types/staging.types";
 
 function bridgeUrl() {
   const url = process.env.BLENDER_BRIDGE_URL;
@@ -64,7 +64,10 @@ export async function getIkeaProduct(itemNo: string): Promise<IkeaProduct> {
 
 /**
  * Download an IKEA item's 3D model and import it into the session's scene, optionally
- * deleting an existing detected object first (replace) — see /ikea/import in the bridge.
+ * deleting whatever currently occupies a slot first (replace) — see /ikea/import in the
+ * bridge. replaceObjectNames must be everything CURRENTLY there, not necessarily the
+ * original scan object's own name (a slot already replaced once is occupied by the
+ * previous import's object_names, which the caller is responsible for tracking).
  */
 export async function placeOrReplaceIkeaItem(
   sessionId: string,
@@ -72,7 +75,7 @@ export async function placeOrReplaceIkeaItem(
     itemNo: string;
     position: [number, number, number];
     rotationZDegrees: number;
-    replaceObjectName?: string;
+    replaceObjectNames?: string[];
   }
 ): Promise<IkeaImportResult> {
   const res = await fetch(`${bridgeUrl()}/ikea/import`, {
@@ -83,10 +86,16 @@ export async function placeOrReplaceIkeaItem(
       item_no: params.itemNo,
       position: params.position,
       rotation_z_degrees: params.rotationZDegrees,
-      replace_object_name: params.replaceObjectName ?? null,
+      replace_object_names: params.replaceObjectNames ?? null,
     }),
   });
   return parseOrThrow(res, "ikea/import") as Promise<IkeaImportResult>;
+}
+
+/** Fetch the curated wall/floor material catalog (floor entries include absolute texture paths on the VM). */
+export async function getMaterials(): Promise<MaterialCatalog> {
+  const res = await fetch(`${bridgeUrl()}/materials`, { headers: bridgeHeaders() });
+  return parseOrThrow(res, "materials") as Promise<MaterialCatalog>;
 }
 
 /** Render a preview image of the current scene state. Returns a URL the bridge serves it from. */

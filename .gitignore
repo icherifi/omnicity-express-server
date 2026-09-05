@@ -33,3 +33,6 @@ blender-bridge/.env
 blender-bridge/sessions
 blender-bridge/ikea_cache
 blender-bridge/__pycache__
+blender-bridge/materials/__pycache__
+# downloaded CC0 textures (large binaries) - keep manifest.json + fetch_materials.py tracked, re-fetch the rest
+blender-bridge/materials/*/

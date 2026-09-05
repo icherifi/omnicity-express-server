@@ -16,6 +16,8 @@ export interface DetectedObject {
   position: [number, number, number];
   rotation_z_degrees: number;
   dimensions_cm: [number, number, number];
+  /** RoomPlan's own identifier for this object (see scans.serialized), when it could be resolved. */
+  roomplan_identifier?: string;
 }
 
 export interface SceneInspection {
@@ -38,8 +40,31 @@ export type IkeaProduct = Record<string, unknown>;
 export interface IkeaImportResult {
   object_names: string[];
   dimensions_cm: [number, number, number];
+  /** Other furniture (not walls/floor/ceiling) whose bounding box meaningfully overlaps this item at its final position. Informational — some overlap (e.g. a lamp on a table) is legitimate. */
+  overlapping_object_names: string[];
   success: boolean;
   output: string;
+}
+
+export interface FloorMaterial {
+  material_id: string;
+  name: string;
+  source: string;
+  diffuse_path: string;
+  normal_path: string;
+  roughness_path: string;
+  tile_size_cm: [number, number];
+}
+
+export interface WallMaterial {
+  material_id: string;
+  name: string;
+  hex_color: string;
+}
+
+export interface MaterialCatalog {
+  floors: FloorMaterial[];
+  walls: WallMaterial[];
 }
 
 export type StagingAction =
@@ -47,12 +72,14 @@ export type StagingAction =
   | {
       type: "replace";
       object_name: string;
+      /** RoomPlan's own identifier for the object being replaced, when known — see scans.serialized. */
+      replaces_roomplan_identifier?: string;
       item_no: string;
       position?: [number, number, number];
       rotation_z_degrees?: number;
     }
-  | { type: "wall_color"; wall_object_names: string[] | "all"; hex_color: string }
-  | { type: "floor_material"; hex_color: string; finish: "matte" | "satin" | "glossy" };
+  | { type: "wall_color"; wall_object_names: string[] | "all"; material_id: string; hex_color: string }
+  | { type: "floor_material"; material_id: string };
 
 export interface StagingSummary {
   actions: StagingAction[];
@@ -62,3 +89,19 @@ export interface StagingSummary {
 }
 
 export type StagingStatus = "none" | "pending" | "processing" | "done" | "error";
+
+// --- Raw ARKit RoomPlan JSON (scans.serialized) — just enough shape to correlate
+// Blender's synthetic "<Category><Index>" object names back to RoomPlan's own
+// per-object identifier. See stagingOrchestratorService.buildRoomPlanIdentifierMap.
+
+export interface RoomPlanEntity {
+  identifier: string;
+  category: Record<string, unknown>;
+}
+
+export interface RoomPlanCapturedRoom {
+  walls: RoomPlanEntity[];
+  floors: RoomPlanEntity[];
+  objects: RoomPlanEntity[];
+  [key: string]: unknown;
+}
