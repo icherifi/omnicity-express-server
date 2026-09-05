@@ -8,7 +8,10 @@ import { RoomPlanCapturedRoom } from '../types/staging.types';
 
 dotenv.config();
 const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_ANON_KEY;
+// documents is a private bucket (RLS blocks anon reads) - this handler runs as a
+// trusted background job with no per-user scoping, so service_role is correct here,
+// not the anon key the rest of the codebase uses for user-facing requests.
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 if (!supabaseUrl || !supabaseKey) {
   throw new Error("Missing Supabase environment variables");
@@ -17,9 +20,10 @@ const supabase = createClient<Database>(supabaseUrl, supabaseKey);
 
 const DOCUMENTS_BUCKET = 'documents';
 
-function publicUsdzUrl(path: string): string {
-  const { data } = supabase.storage.from(DOCUMENTS_BUCKET).getPublicUrl(path);
-  return data.publicUrl;
+async function signedUsdzUrl(path: string): Promise<string> {
+  const { data, error } = await supabase.storage.from(DOCUMENTS_BUCKET).createSignedUrl(path, 3600);
+  if (error) throw error;
+  return data.signedUrl;
 }
 
 /** POST /api/scans/:id/stage — kicks off automated staging in the background and returns immediately. */
@@ -53,7 +57,7 @@ export const startStaging = async (req: Request, res: Response) => {
       ? ((typeof scan.serialized === 'string' ? JSON.parse(scan.serialized) : scan.serialized) as RoomPlanCapturedRoom)
       : undefined;
 
-    const { summary, exportFileUrl, previewFileUrl } = await runStaging(publicUsdzUrl(scan.usdz_path), serialized);
+    const { summary, exportFileUrl, previewFileUrl } = await runStaging(await signedUsdzUrl(scan.usdz_path), serialized);
 
     const staged = await downloadBridgeFile(exportFileUrl);
     const stagedPath = `staging/${id}/staged.usdz`;

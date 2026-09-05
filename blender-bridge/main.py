@@ -319,8 +319,12 @@ def inspect(req: InspectRequest, _auth=Depends(require_api_key)):
     sdir.mkdir(parents=True, exist_ok=True)
 
     scan_path = sdir / "scan.usdz"
-    resp = requests.get(req.usdz_url, timeout=60)
-    resp.raise_for_status()
+    try:
+        resp = requests.get(req.usdz_url, timeout=60)
+        resp.raise_for_status()
+    except requests.RequestException as e:
+        shutil.rmtree(sdir, ignore_errors=True)
+        raise HTTPException(502, f"Could not download usdz_url: {e}")
     scan_path.write_bytes(resp.content)
 
     working_blend = sdir / "working.blend"
