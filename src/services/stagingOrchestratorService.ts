@@ -18,8 +18,14 @@ function anthropicClient() {
   if (!apiKey) throw new Error("Missing ANTHROPIC_API_KEY environment variable");
   // A hung request here previously left a scan stuck in "processing" forever - nothing
   // ever reached the catch block in staging.ts to mark it "error". Bound it explicitly
-  // rather than trust an unbounded default.
-  return new Anthropic({ apiKey, timeout: 120_000 });
+  // rather than trust an unbounded default (10 minutes).
+  //
+  // The SDK retries a timed-out request by default (maxRetries: 2), so the real
+  // worst case is timeout * (1 + maxRetries) - with the default retry count that's
+  // 6 minutes, not 120s, which is exactly how long a real stalled run took to
+  // (correctly) surface as an error. Capping retries at 1 keeps some resilience to a
+  // one-off network blip without compounding the wait past ~4 minutes.
+  return new Anthropic({ apiKey, timeout: 120_000, maxRetries: 1 });
 }
 
 function buildTools(materials: MaterialCatalog): Anthropic.Tool[] {
