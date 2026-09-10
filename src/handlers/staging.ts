@@ -3,7 +3,6 @@ import { Request, Response } from 'express';
 import dotenv from 'dotenv';
 import { Database } from '../types/database.types';
 import { runStaging } from '../services/stagingOrchestratorService';
-import { downloadBridgeFile } from '../services/blenderBridgeService';
 import { RoomPlanCapturedRoom } from '../types/staging.types';
 
 dotenv.config();
@@ -19,12 +18,6 @@ if (!supabaseUrl || !supabaseKey) {
 const supabase = createClient<Database>(supabaseUrl, supabaseKey);
 
 const DOCUMENTS_BUCKET = 'documents';
-
-async function signedUsdzUrl(path: string): Promise<string> {
-  const { data, error } = await supabase.storage.from(DOCUMENTS_BUCKET).createSignedUrl(path, 3600);
-  if (error) throw error;
-  return data.signedUrl;
-}
 
 /** POST /api/scans/:id/stage — kicks off automated staging in the background and returns immediately. */
 export const startStaging = async (req: Request, res: Response) => {
@@ -42,8 +35,8 @@ export const startStaging = async (req: Request, res: Response) => {
   if (!scan) {
     return res.status(404).json({ error: 'Scan not found' });
   }
-  if (!scan.usdz_path) {
-    return res.status(400).json({ error: 'Scan has no usdz_path' });
+  if (!scan.serialized) {
+    return res.status(400).json({ error: 'Scan has no serialized room data' });
   }
   if (scan.staging_status === 'processing' || scan.staging_status === 'pending') {
     return res.status(409).json({ error: `Staging already ${scan.staging_status}` });
@@ -54,40 +47,36 @@ export const startStaging = async (req: Request, res: Response) => {
   // reads that as the current state.
   await supabase
     .from('scans')
-    .update({ staging_status: 'processing', staging_summary: null, staged_usdz_path: null })
+    .update({ staging_status: 'processing', staging_summary: null })
     .eq('id', id);
   res.status(202).json({ message: 'Staging started', staging_status: 'processing' });
 
   try {
-    const serialized: RoomPlanCapturedRoom | undefined = scan.serialized
-      ? ((typeof scan.serialized === 'string' ? JSON.parse(scan.serialized) : scan.serialized) as RoomPlanCapturedRoom)
-      : undefined;
+    const serialized: RoomPlanCapturedRoom =
+      typeof scan.serialized === 'string'
+        ? JSON.parse(scan.serialized)
+        : (scan.serialized as unknown as RoomPlanCapturedRoom);
 
-    const { summary, exportFileUrl, previewFileUrl } = await runStaging(await signedUsdzUrl(scan.usdz_path), serialized);
+    const { summary, previewBuffer } = await runStaging(serialized);
 
-    const staged = await downloadBridgeFile(exportFileUrl);
-    const stagedPath = `staging/${id}/staged.usdz`;
+    // No exported 3D file anymore - the frontend composes the scene live from
+    // staging_summary.actions + cached IKEA GLBs. Only the preview render (for
+    // display in the "done" UI state) needs to be persisted anywhere.
+    const previewPath = `staging/${id}/preview.png`;
     const { error: uploadError } = await supabase.storage
       .from(DOCUMENTS_BUCKET)
-      .upload(stagedPath, staged.buffer, { contentType: staged.contentType, upsert: true });
+      .upload(previewPath, previewBuffer, { contentType: 'image/png', upsert: true });
     if (uploadError) throw uploadError;
 
-    const preview = await downloadBridgeFile(previewFileUrl);
-    const previewPath = `staging/${id}/preview.png`;
-    await supabase.storage
-      .from(DOCUMENTS_BUCKET)
-      .upload(previewPath, preview.buffer, { contentType: preview.contentType, upsert: true });
-
-    // Reaching this line means the tool loop, render, and export all succeeded -
+    // Reaching this line means the tool loop and final render both succeeded -
     // summary.errors just lists non-fatal hiccups Claude already worked around
     // along the way (e.g. an IKEA item with no product page, a bad model download).
-    // Flagging a run with a real staged.usdz as "error" because of those was wrong -
-    // it hid a fully successful 16-item run behind an error screen.
+    // Flagging a successful run as "error" because of those was wrong before - it
+    // hid a fully successful run behind an error screen.
     await supabase
       .from('scans')
       .update({
         staging_status: 'done',
-        staged_usdz_path: stagedPath,
         staging_summary: { ...summary, preview_render_path: previewPath } as any,
         staged_at: new Date().toISOString(),
       })
@@ -125,7 +114,7 @@ export const getStagingStatus = async (req: Request, res: Response) => {
 
   const { data: scan, error } = await supabase
     .from('scans')
-    .select('id, staging_status, staged_usdz_path, staging_summary, staged_at')
+    .select('id, staging_status, staging_summary, staged_at, serialized')
     .eq('id', id)
     .maybeSingle();
 

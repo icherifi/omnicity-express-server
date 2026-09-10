@@ -1,8 +1,12 @@
 import Anthropic from "@anthropic-ai/sdk";
-import * as bridge from "./blenderBridgeService";
+import * as ikeaService from "./ikeaService";
+import * as glbGeometryService from "./glbGeometryService";
+import { LocalBoundingBox } from "./glbGeometryService";
+import { inspectRoom } from "./roomShellService";
+import { getMaterials } from "./materialsService";
+import { StagingRenderSession } from "./stagingRenderService";
 import {
   DetectedObject,
-  FloorMaterial,
   MaterialCatalog,
   RoomPlanCapturedRoom,
   SceneInspection,
@@ -12,6 +16,7 @@ import {
 
 const DEFAULT_MODEL = process.env.ANTHROPIC_STAGING_MODEL || "claude-sonnet-5";
 const MAX_TOOL_ROUNDS = 25;
+const OVERLAP_VOLUME_THRESHOLD_M3 = 0.01;
 
 function anthropicClient() {
   const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -56,28 +61,28 @@ function buildTools(materials: MaterialCatalog): Anthropic.Tool[] {
     {
       name: "place_furniture",
       description:
-        "Download and import an IKEA item into an empty area of the room. Returns the imported object's real-world dimensions (cm) so you can check it actually fits — undo by deleting the returned object names via set_wall_color-style scripting is not available, so pick carefully or replace with a better-fitting item afterwards.",
+        "Download an IKEA item and place it in an empty area of the room. Returns the item's real-world dimensions (cm) so you can check it actually fits, and any furniture it now overlaps.",
       input_schema: {
         type: "object",
         properties: {
           item_no: { type: "string" },
           position: { type: "array", items: { type: "number" }, minItems: 3, maxItems: 3 },
-          rotation_z_degrees: { type: "number" },
+          rotation_y_degrees: { type: "number" },
         },
-        required: ["item_no", "position", "rotation_z_degrees"],
+        required: ["item_no", "position", "rotation_y_degrees"],
       },
     },
     {
       name: "replace_furniture",
       description:
-        "Remove a detected object from the scan (by object_name from the room inspection) and put an IKEA item in its place. Position/rotation default to the original object's transform if omitted. Returns the new object's real-world dimensions (cm).",
+        "Swap a detected object from the scan (by object_name from the room inspection) for an IKEA item in its place. Position/rotation default to the original object's transform if omitted. Returns the new object's real-world dimensions (cm). Calling this again on the same object_name replaces whatever you last put there, not the original.",
       input_schema: {
         type: "object",
         properties: {
           object_name: { type: "string" },
           item_no: { type: "string" },
           position: { type: "array", items: { type: "number" }, minItems: 3, maxItems: 3 },
-          rotation_z_degrees: { type: "number" },
+          rotation_y_degrees: { type: "number" },
         },
         required: ["object_name", "item_no"],
       },
@@ -131,7 +136,7 @@ function systemPrompt(inspection: SceneInspection, materials: MaterialCatalog): 
   const wallList = materials.walls.map((w) => `${w.material_id} (${w.name})`).join(", ");
   const floorList = materials.floors.map((f) => `${f.material_id} (${f.name})`).join(", ");
 
-  return `Tu es un décorateur d'intérieur virtuel. Tu reçois le scan 3D (USDZ) d'une pièce déjà importé dans Blender, avec des objets déjà détectés (murs, sol, et du mobilier placé par le scan). Ton objectif : produire une mise en scène réaliste et vendeuse ("home staging"), en utilisant exclusivement le catalogue IKEA (recherche live via search_ikea).
+  return `Tu es un décorateur d'intérieur virtuel. Tu reçois la géométrie d'une pièce scannée, avec des objets déjà détectés (murs, sol, et du mobilier). Ton objectif : produire une mise en scène réaliste et vendeuse ("home staging"), en utilisant exclusivement le catalogue IKEA (recherche live via search_ikea).
 
 Trois étapes sont OBLIGATOIRES et vérifiées automatiquement — finish_staging est refusé tant que les trois n'ont pas été faites au moins une fois, quel que soit le reste : set_wall_color, set_floor_material, et render_preview (dans cet ordre ou un autre, mais toutes les trois).
 
@@ -141,9 +146,9 @@ Règles :
 - OBLIGATOIRE : choisis une couleur de mur (set_wall_color) et un matériau de sol (set_floor_material) parmi la liste fournie ci-dessous — ne saute pas cette étape, elle est vérifiée.
 - Après chaque place_furniture/replace_furniture, vérifie les dimensions réelles renvoyées (dimensions_cm) : si l'objet est manifestement trop grand/petit pour l'espace, cherche une meilleure alternative.
 - Recherche toujours avec search_ikea avant de placer ou remplacer — n'invente jamais d'item_no.
-- Les positions sont en mètres, dans le repère de la pièce fourni ci-dessous. Le Z d'une position est le niveau du sol où l'objet doit reposer (le bas de l'objet — quelle que soit son origine 3D propre — sera aligné automatiquement sur ce Z) ; utilise le sol de la pièce (voir bounds_min ci-dessous) sauf pour un meuble volontairement suspendu/mural. Les rotations sont en degrés autour de l'axe Z.
+- Les positions sont en mètres, dans le repère de la pièce fourni ci-dessous (Y = axe vertical). Le Y d'une position est le niveau du sol où l'objet doit reposer (le bas de l'objet — quelle que soit son origine 3D propre — sera aligné automatiquement sur ce Y) ; utilise le sol de la pièce (voir bounds_min ci-dessous) sauf pour un meuble volontairement suspendu/mural. Les rotations (rotation_y_degrees) sont en degrés autour de l'axe Y.
 - Un avertissement de chevauchement (warning/overlapping_object_names) après place_furniture/replace_furniture ne veut pas forcément dire une erreur (un objet peut légitimement en toucher un autre, ex. une lampe sur une table) — mais vérifie que ce n'est pas une vraie collision.
-- OBLIGATOIRE : appelle render_preview au moins une fois pour regarder le résultat avant de conclure — les chiffres (dimensions, chevauchements) ne disent pas tout : un meuble qui traverse un mur, une orientation illogique (dossier de chaise face au mur, canapé qui ne fait pas face à la pièce), des couleurs qui jurent, une pièce qui a l'air vide ne se voient qu'à l'image. Si un meuble a l'air mal orienté, corrige rotation_z_degrees et relance replace_furniture/place_furniture sur ce même meuble.
+- OBLIGATOIRE : appelle render_preview au moins une fois pour regarder le résultat avant de conclure — les chiffres (dimensions, chevauchements) ne disent pas tout : un meuble qui traverse un mur, une orientation illogique (dossier de chaise face au mur, canapé qui ne fait pas face à la pièce), des couleurs qui jurent, une pièce qui a l'air vide ne se voient qu'à l'image. Si un meuble a l'air mal orienté, corrige rotation_y_degrees et relance replace_furniture/place_furniture sur ce même meuble.
 - Quand les trois étapes obligatoires sont faites et que la pièce est prête, appelle finish_staging avec un résumé court des choix faits.
 
 Couleurs de mur disponibles : ${wallList}
@@ -155,102 +160,117 @@ ${JSON.stringify(inspection, null, 2)}`;
 
 type ToolResultContent = string | Array<Anthropic.TextBlockParam | Anthropic.ImageBlockParam>;
 
+interface PlacedItem {
+  itemNo: string;
+  /** The model's own as-authored bounding box, before placement - empty/zeroed for
+   * original scanned objects (reconstructed from dimensions_cm instead). */
+  localBox: LocalBoundingBox;
+  position: [number, number, number];
+  rotationYDegrees: number;
+}
+
 interface RunState {
   hasRenderedPreview: boolean;
   hasSetWallColor: boolean;
   hasSetFloorMaterial: boolean;
   /**
-   * What CURRENTLY occupies each original-scan-object slot, keyed by that slot's
-   * original name. Starts as each slot occupied by itself; after a replace, updated to
-   * that import's own object_names — so a second replace of the same slot deletes the
-   * PREVIOUS IKEA item instead of futilely searching for the long-gone original name
-   * (that bug shipped once already: a re-replaced sofa just piled a second one on top).
+   * What CURRENTLY occupies each slot, keyed by the original scanned object's
+   * object_name for replace_furniture targets, or a synthetic "PlacedN" key for
+   * bare place_furniture calls. Seeded at startup with one entry per original
+   * RoomPlan furniture object, so overlap checks always scan one uniform
+   * collection. Replacing a slot is just overwriting its map entry - there's no
+   * scene file to delete anything from anymore, so (unlike the old Blender
+   * bridge) a second replace of the same slot needs no special-case handling.
    */
-  currentOccupants: Map<string, string[]>;
+  slots: Map<string, PlacedItem>;
+  nextPlacedIndex: number;
 }
 
-async function callTool(
-  sessionId: string,
-  name: string,
-  input: any,
-  objectsByName: Map<string, DetectedObject>,
-  materials: MaterialCatalog,
-  actions: StagingAction[],
-  errors: string[],
-  state: RunState,
-  floorZ: number
-): Promise<ToolResultContent> {
+interface StagingContext {
+  serialized: RoomPlanCapturedRoom;
+  objectsByName: Map<string, DetectedObject>;
+  materials: MaterialCatalog;
+  /** Room's floor height (bounds_min[1]) - the default Y for replace_furniture
+   * when Claude doesn't override it. */
+  floorY: number;
+  renderSession: StagingRenderSession;
+  actions: StagingAction[];
+  errors: string[];
+  state: RunState;
+}
+
+function findOverlaps(slots: Map<string, PlacedItem>, excludeKey: string | null, placedBox: LocalBoundingBox): string[] {
+  const overlapping: string[] = [];
+  for (const [key, item] of slots) {
+    if (key === excludeKey) continue;
+    const otherBox = glbGeometryService.placedBoundingBox(item.localBox, item.position, item.rotationYDegrees);
+    const volume = glbGeometryService.boxOverlapVolume(placedBox, otherBox);
+    if (volume > OVERLAP_VOLUME_THRESHOLD_M3) overlapping.push(key);
+  }
+  return overlapping;
+}
+
+function overlapWarning(overlapping: string[]): string | undefined {
+  return overlapping.length > 0
+    ? `Overlaps ${overlapping.join(", ")} — check if intentional (e.g. stacking) or move/replace it.`
+    : undefined;
+}
+
+async function callTool(name: string, input: any, ctx: StagingContext): Promise<ToolResultContent> {
   console.log(`[staging] ${name}(${JSON.stringify(input)})`);
+  const { objectsByName, materials, actions, errors, state } = ctx;
   try {
     switch (name) {
       case "search_ikea": {
-        const results = await bridge.searchIkea(input.query);
+        const results = await ikeaService.search(input.query);
         return JSON.stringify(results);
       }
 
       case "get_ikea_product": {
-        const product = await bridge.getIkeaProduct(input.item_no);
+        const product = await ikeaService.getProduct(input.item_no);
         return JSON.stringify(product);
       }
 
       case "place_furniture": {
-        const [x, y, z] = input.position;
-        const result = await bridge.placeOrReplaceIkeaItem(sessionId, {
-          itemNo: input.item_no,
-          position: [x, y, z],
-          rotationZDegrees: input.rotation_z_degrees,
-        });
-        if (!result.success) {
-          errors.push(result.output);
-          return `ERROR: ${result.output}`;
-        }
+        const position: [number, number, number] = input.position;
+        const rotationYDegrees = input.rotation_y_degrees;
 
-        actions.push({
-          type: "place",
-          item_no: input.item_no,
-          position: [x, y, z],
-          rotation_z_degrees: input.rotation_z_degrees,
-        });
-        return JSON.stringify({
-          object_names: result.object_names,
-          dimensions_cm: result.dimensions_cm,
-          overlapping_object_names: result.overlapping_object_names,
-          warning:
-            result.overlapping_object_names.length > 0
-              ? `Overlaps ${result.overlapping_object_names.join(", ")} — check if intentional (e.g. stacking) or move/replace it.`
-              : undefined,
-        });
+        const glbPath = await ikeaService.getModel(input.item_no);
+        const localBox = glbGeometryService.computeLocalBoundingBox(glbPath);
+        const dimensions_cm = glbGeometryService.dimensionsCm(localBox);
+        const placedBox = glbGeometryService.placedBoundingBox(localBox, position, rotationYDegrees);
+        const overlapping = findOverlaps(state.slots, null, placedBox);
+
+        const slotKey = `Placed${state.nextPlacedIndex++}`;
+        state.slots.set(slotKey, { itemNo: input.item_no, localBox, position, rotationYDegrees });
+
+        actions.push({ type: "place", item_no: input.item_no, position, rotation_y_degrees: rotationYDegrees });
+        return JSON.stringify({ dimensions_cm, overlapping_object_names: overlapping, warning: overlapWarning(overlapping) });
       }
 
       case "replace_furniture": {
         const original = objectsByName.get(input.object_name);
         if (!original) return `ERROR: unknown object_name ${input.object_name} (not in room inspection)`;
 
-        // original.position's Z is that scanned object's own center (see /inspect,
-        // which reads matrix_world.translation) - reusing it directly as a new,
-        // usually differently-sized item's placement floated replacements roughly
-        // half their height above the real floor. X/Y (footprint location) are still
-        // fine to inherit; Z should come from the room's actual floor level instead.
+        // original.position's Y is that scanned object's own center - reusing it
+        // directly as a new, usually differently-sized item's placement floated
+        // replacements roughly half their height above the real floor. X/Z
+        // (footprint location) are still fine to inherit; Y should come from the
+        // room's actual floor level instead.
         const position: [number, number, number] = input.position ?? [
           original.position[0],
-          original.position[1],
-          floorZ,
+          ctx.floorY,
+          original.position[2],
         ];
-        const rotation = input.rotation_z_degrees ?? original.rotation_z_degrees;
-        const occupantNames = state.currentOccupants.get(input.object_name) ?? [input.object_name];
+        const rotationYDegrees = input.rotation_y_degrees ?? original.rotation_y_degrees;
 
-        const result = await bridge.placeOrReplaceIkeaItem(sessionId, {
-          itemNo: input.item_no,
-          position,
-          rotationZDegrees: rotation,
-          replaceObjectNames: occupantNames,
-        });
-        if (!result.success) {
-          errors.push(result.output);
-          return `ERROR: ${result.output}`;
-        }
+        const glbPath = await ikeaService.getModel(input.item_no);
+        const localBox = glbGeometryService.computeLocalBoundingBox(glbPath);
+        const dimensions_cm = glbGeometryService.dimensionsCm(localBox);
+        const placedBox = glbGeometryService.placedBoundingBox(localBox, position, rotationYDegrees);
+        const overlapping = findOverlaps(state.slots, input.object_name, placedBox);
 
-        state.currentOccupants.set(input.object_name, result.object_names);
+        state.slots.set(input.object_name, { itemNo: input.item_no, localBox, position, rotationYDegrees });
 
         actions.push({
           type: "replace",
@@ -258,17 +278,9 @@ async function callTool(
           replaces_roomplan_identifier: original.roomplan_identifier,
           item_no: input.item_no,
           position,
-          rotation_z_degrees: rotation,
+          rotation_y_degrees: rotationYDegrees,
         });
-        return JSON.stringify({
-          object_names: result.object_names,
-          dimensions_cm: result.dimensions_cm,
-          overlapping_object_names: result.overlapping_object_names,
-          warning:
-            result.overlapping_object_names.length > 0
-              ? `Overlaps ${result.overlapping_object_names.join(", ")} — check if intentional (e.g. stacking) or move/replace it.`
-              : undefined,
-        });
+        return JSON.stringify({ dimensions_cm, overlapping_object_names: overlapping, warning: overlapWarning(overlapping) });
       }
 
       case "set_wall_color": {
@@ -276,13 +288,6 @@ async function callTool(
         if (!material) return `ERROR: unknown wall material_id ${input.material_id}`;
 
         const targets: string[] = input.wall_object_names ?? [];
-        const script = buildWallColorScript(input.all_walls ? "all" : targets, material.hex_color);
-        const result = await bridge.executeScript(sessionId, script);
-        if (!result.success) {
-          errors.push(result.output);
-          return `ERROR: ${result.output}`;
-        }
-
         state.hasSetWallColor = true;
         actions.push({
           type: "wall_color",
@@ -297,21 +302,20 @@ async function callTool(
         const material = materials.floors.find((f) => f.material_id === input.material_id);
         if (!material) return `ERROR: unknown floor material_id ${input.material_id}`;
 
-        const script = buildFloorMaterialScript(material);
-        const result = await bridge.executeScript(sessionId, script);
-        if (!result.success) {
-          errors.push(result.output);
-          return `ERROR: ${result.output}`;
-        }
-
         state.hasSetFloorMaterial = true;
-        actions.push({ type: "floor_material", material_id: material.material_id });
+        actions.push({
+          type: "floor_material",
+          material_id: material.material_id,
+          diffuse_path: material.diffuse_path,
+          normal_path: material.normal_path,
+          roughness_path: material.roughness_path,
+          tile_size_cm: material.tile_size_cm,
+        });
         return `Floor material set to ${material.name}.`;
       }
 
       case "render_preview": {
-        const preview = await bridge.renderPreview(sessionId);
-        const { buffer } = await bridge.downloadBridgeFile(preview.file_url);
+        const buffer = await ctx.renderSession.renderPreview({ scanData: ctx.serialized, actions });
         state.hasRenderedPreview = true;
         return [
           { type: "text", text: "Current state of the room:" },
@@ -342,146 +346,51 @@ async function callTool(
   }
 }
 
-export function buildWallColorScript(targets: string[] | "all", hexColor: string): string {
-  const [r, g, b] = hexToLinearRgb(hexColor);
-  const targetsExpr =
-    targets === "all"
-      ? "[o for o in bpy.data.objects if o.type == 'MESH' and 'wall' in o.name.lower()]"
-      : `[bpy.data.objects.get(n) for n in ${JSON.stringify(targets)}]`;
-  return `
-targets = ${targetsExpr}
-for obj in targets:
-    if obj is None or obj.type != 'MESH':
-        continue
-    mat = bpy.data.materials.get(f"staging_wall_{obj.name}") or bpy.data.materials.new(f"staging_wall_{obj.name}")
-    mat.use_nodes = True
-    bsdf = mat.node_tree.nodes.get("Principled BSDF")
-    if bsdf is not None:
-        bsdf.inputs["Base Color"].default_value = (${r}, ${g}, ${b}, 1.0)
-    obj.data.materials.clear()
-    obj.data.materials.append(mat)
-`;
-}
-
-/**
- * Builds a real PBR material (diffuse/normal/roughness maps, tiled at the material's
- * real-world tile_size_cm via a Mapping node) instead of a flat color — flat floors
- * don't read as realistic in a staging render the way flat-painted walls do.
- */
-export function buildFloorMaterialScript(floor: FloorMaterial): string {
-  const tileWidthM = floor.tile_size_cm[0] / 100;
-  const tileHeightM = floor.tile_size_cm[1] / 100;
-  return `
-floor_objs = [o for o in bpy.data.objects if o.type == 'MESH' and 'floor' in o.name.lower()]
-
-for obj in floor_objs:
-    mat = bpy.data.materials.get(f"staging_floor_{obj.name}") or bpy.data.materials.new(f"staging_floor_{obj.name}")
-    mat.use_nodes = True
-    nodes = mat.node_tree.nodes
-    links = mat.node_tree.links
-    nodes.clear()
-
-    bsdf = nodes.new("ShaderNodeBsdfPrincipled")
-    output = nodes.new("ShaderNodeOutputMaterial")
-    links.new(bsdf.outputs["BSDF"], output.inputs["Surface"])
-
-    tex_coord = nodes.new("ShaderNodeTexCoord")
-    mapping = nodes.new("ShaderNodeMapping")
-    links.new(tex_coord.outputs["Generated"], mapping.inputs["Vector"])
-    repeat_x = max(obj.dimensions.x / ${tileWidthM}, 0.01)
-    repeat_y = max(obj.dimensions.y / ${tileHeightM}, 0.01)
-    mapping.inputs["Scale"].default_value = (repeat_x, repeat_y, 1.0)
-
-    diffuse_tex = nodes.new("ShaderNodeTexImage")
-    diffuse_tex.image = bpy.data.images.load(${JSON.stringify(floor.diffuse_path)}, check_existing=True)
-    links.new(mapping.outputs["Vector"], diffuse_tex.inputs["Vector"])
-    links.new(diffuse_tex.outputs["Color"], bsdf.inputs["Base Color"])
-
-    rough_tex = nodes.new("ShaderNodeTexImage")
-    rough_tex.image = bpy.data.images.load(${JSON.stringify(floor.roughness_path)}, check_existing=True)
-    rough_tex.image.colorspace_settings.name = 'Non-Color'
-    links.new(mapping.outputs["Vector"], rough_tex.inputs["Vector"])
-    links.new(rough_tex.outputs["Color"], bsdf.inputs["Roughness"])
-
-    normal_tex = nodes.new("ShaderNodeTexImage")
-    normal_tex.image = bpy.data.images.load(${JSON.stringify(floor.normal_path)}, check_existing=True)
-    normal_tex.image.colorspace_settings.name = 'Non-Color'
-    links.new(mapping.outputs["Vector"], normal_tex.inputs["Vector"])
-    normal_map = nodes.new("ShaderNodeNormalMap")
-    links.new(normal_tex.outputs["Color"], normal_map.inputs["Color"])
-    links.new(normal_map.outputs["Normal"], bsdf.inputs["Normal"])
-
-    obj.data.materials.clear()
-    obj.data.materials.append(mat)
-`;
-}
-
-function hexToLinearRgb(hex: string): [number, number, number] {
-  const clean = hex.replace("#", "");
-  const r = parseInt(clean.substring(0, 2), 16) / 255;
-  const g = parseInt(clean.substring(2, 4), 16) / 255;
-  const b = parseInt(clean.substring(4, 6), 16) / 255;
-  const toLinear = (c: number) => (c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4));
-  return [toLinear(r), toLinear(g), toLinear(b)];
-}
-
-/**
- * Correlates Blender's synthetic "<Category><Index>" object names (e.g. "Chair2") back to
- * RoomPlan's own per-object identifier (UUID), by replaying the same per-category counting
- * Apple's USDZ exporter uses — verified against a real scan: walking walls/floors/objects in
- * their JSON array order and numbering each by prior occurrences of the same category
- * reproduces Blender's exact naming. There is no shared ID embedded in the USDZ itself.
- */
-export function buildRoomPlanIdentifierMap(room: RoomPlanCapturedRoom): Map<string, string> {
-  const map = new Map<string, string>();
-  const counters: Record<string, number> = {};
-
-  const walk = (entities: { identifier: string; category: Record<string, unknown> }[] | undefined) => {
-    for (const entity of entities ?? []) {
-      const category = Object.keys(entity.category ?? {})[0];
-      if (!category) continue;
-      const index = counters[category] ?? 0;
-      counters[category] = index + 1;
-      const blenderName = category.charAt(0).toUpperCase() + category.slice(1) + index;
-      map.set(blenderName, entity.identifier);
-    }
-  };
-
-  walk(room.walls);
-  walk(room.floors);
-  walk(room.objects);
-
-  return map;
-}
-
 export interface RunStagingResult {
   summary: StagingSummary;
-  exportFileUrl: string;
-  previewFileUrl: string;
+  previewBuffer: Buffer;
 }
 
-export async function runStaging(usdzUrl: string, serialized?: RoomPlanCapturedRoom): Promise<RunStagingResult> {
+export async function runStaging(serialized: RoomPlanCapturedRoom): Promise<RunStagingResult> {
   const anthropic = anthropicClient();
-  const [inspection, materials] = await Promise.all([bridge.inspectScene(usdzUrl), bridge.getMaterials()]);
-
-  if (serialized) {
-    const identifiers = buildRoomPlanIdentifierMap(serialized);
-    for (const obj of inspection.objects) {
-      const id = identifiers.get(obj.object_name);
-      if (id) obj.roomplan_identifier = id;
-    }
-  }
+  const inspection = inspectRoom(serialized);
+  const materials = getMaterials();
 
   const objectsByName = new Map(inspection.objects.map((o) => [o.object_name, o]));
   const tools = buildTools(materials);
 
   const actions: StagingAction[] = [];
   const errors: string[] = [];
+
+  const slots = new Map<string, PlacedItem>();
+  for (const obj of inspection.objects) {
+    const [w, h, d] = obj.dimensions_cm.map((cm) => cm / 100);
+    slots.set(obj.object_name, {
+      itemNo: "",
+      localBox: { min: [-w / 2, -h / 2, -d / 2], max: [w / 2, h / 2, d / 2] },
+      position: obj.position,
+      rotationYDegrees: obj.rotation_y_degrees,
+    });
+  }
+
   const state: RunState = {
     hasRenderedPreview: false,
     hasSetWallColor: false,
     hasSetFloorMaterial: false,
-    currentOccupants: new Map(inspection.objects.map((o) => [o.object_name, [o.object_name]])),
+    slots,
+    nextPlacedIndex: 0,
+  };
+
+  const renderSession = new StagingRenderSession();
+  const ctx: StagingContext = {
+    serialized,
+    objectsByName,
+    materials,
+    floorY: inspection.room.bounds_min[1],
+    renderSession,
+    actions,
+    errors,
+    state,
   };
 
   const messages: Anthropic.MessageParam[] = [
@@ -494,62 +403,58 @@ export async function runStaging(usdzUrl: string, serialized?: RoomPlanCapturedR
 
   let finished = false;
 
-  for (let round = 0; round < MAX_TOOL_ROUNDS && !finished; round++) {
-    const response = await anthropic.messages.create({
-      model: DEFAULT_MODEL,
-      max_tokens: 8192,
-      system: systemPrompt(inspection, materials),
-      tools,
-      messages,
-    });
+  try {
+    for (let round = 0; round < MAX_TOOL_ROUNDS && !finished; round++) {
+      const response = await anthropic.messages.create({
+        model: DEFAULT_MODEL,
+        max_tokens: 8192,
+        system: systemPrompt(inspection, materials),
+        tools,
+        messages,
+      });
 
-    messages.push({ role: "assistant", content: response.content });
+      messages.push({ role: "assistant", content: response.content });
 
-    const toolUses = response.content.filter(
-      (block): block is Anthropic.ToolUseBlock => block.type === "tool_use"
-    );
-
-    if (toolUses.length === 0) {
-      // Claude stopped without explicitly finishing — treat as done rather than looping forever.
-      break;
-    }
-
-    const toolResults: Anthropic.ToolResultBlockParam[] = [];
-    for (const toolUse of toolUses) {
-      const output = await callTool(
-        inspection.session_id,
-        toolUse.name,
-        toolUse.input,
-        objectsByName,
-        materials,
-        actions,
-        errors,
-        state,
-        inspection.room.bounds_min[2]
+      const toolUses = response.content.filter(
+        (block): block is Anthropic.ToolUseBlock => block.type === "tool_use"
       );
-      toolResults.push({ type: "tool_result", tool_use_id: toolUse.id, content: output });
-      if (toolUse.name === "finish_staging" && output === "Staging finished.") finished = true;
+
+      if (toolUses.length === 0) {
+        // Claude stopped without explicitly finishing — treat as done rather than looping forever.
+        break;
+      }
+
+      const toolResults: Anthropic.ToolResultBlockParam[] = [];
+      for (const toolUse of toolUses) {
+        const output = await callTool(toolUse.name, toolUse.input, ctx);
+        toolResults.push({ type: "tool_result", tool_use_id: toolUse.id, content: output });
+        if (toolUse.name === "finish_staging" && output === "Staging finished.") finished = true;
+      }
+
+      messages.push({ role: "user", content: toolResults });
     }
 
-    messages.push({ role: "user", content: toolResults });
+    // Render once more unconditionally at the end, in case the last render_preview
+    // during the loop wasn't Claude's actual last action (it can set more wall/floor
+    // materials after looking, without re-rendering before finish_staging).
+    const previewBuffer = await renderSession.renderPreview({ scanData: serialized, actions });
+
+    const notesBlock = messages
+      .flatMap((m) => (Array.isArray(m.content) ? m.content : []))
+      .find(
+        (block): block is Anthropic.ToolUseBlock =>
+          (block as any).type === "tool_use" && (block as any).name === "finish_staging"
+      ) as Anthropic.ToolUseBlock | undefined;
+
+    const summary: StagingSummary = {
+      actions,
+      notes: (notesBlock?.input as any)?.notes ?? "",
+      preview_render_path: null, // filled in by the caller once the render has been persisted to storage
+      errors,
+    };
+
+    return { summary, previewBuffer };
+  } finally {
+    await renderSession.close();
   }
-
-  const preview = await bridge.renderPreview(inspection.session_id);
-  const exported = await bridge.exportScene(inspection.session_id);
-
-  const notesBlock = messages
-    .flatMap((m) => (Array.isArray(m.content) ? m.content : []))
-    .find(
-      (block): block is Anthropic.ToolUseBlock =>
-        (block as any).type === "tool_use" && (block as any).name === "finish_staging"
-    ) as Anthropic.ToolUseBlock | undefined;
-
-  const summary: StagingSummary = {
-    actions,
-    notes: (notesBlock?.input as any)?.notes ?? "",
-    preview_render_path: null, // filled in by the caller once the render has been persisted to storage
-    errors,
-  };
-
-  return { summary, exportFileUrl: exported.file_url, previewFileUrl: preview.file_url };
 }
