@@ -15,6 +15,9 @@ export interface RoomShellInfo {
   wall_object_names: string[];
   floor_object_names: string[];
   ceiling_object_names: string[];
+  /** One polygon (loop of [worldX, worldZ] points) per floors[] entity - RoomPlan's
+   * own real walkable-floor contour, not a derived/approximated one. */
+  floor_polygons: [number, number][][];
 }
 
 export interface DetectedObject {

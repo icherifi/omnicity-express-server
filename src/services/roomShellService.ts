@@ -34,6 +34,20 @@ function entityWorldBox(entity: RoomPlanEntity): THREE.Box3 {
   return box;
 }
 
+/** `polygonCorners` is a list of local-frame [x, y, 0] points (the entity's own flat
+ * outline, z=0 since it lies in the entity's own thickness-free plane) - map each
+ * through the entity's world matrix and drop to [worldX, worldZ], the same convention
+ * `entityWorldBox` already uses for its 8 box corners, just applied to an arbitrary
+ * point list instead of a box's corners. */
+function entityWorldPolygon(entity: RoomPlanEntity): [number, number][] {
+  const corners = (entity.polygonCorners as number[][] | undefined) ?? [];
+  const matrix = entityWorldMatrix(entity);
+  return corners.map(([x, y, z]) => {
+    const world = new THREE.Vector3(x, y, z).applyMatrix4(matrix);
+    return [world.x, world.z] as [number, number];
+  });
+}
+
 function entityPositionAndYaw(entity: RoomPlanEntity): { position: [number, number, number]; rotationYDegrees: number } {
   const position = new THREE.Vector3();
   const quaternion = new THREE.Quaternion();
@@ -70,6 +84,11 @@ export function inspectRoom(serialized: RoomPlanCapturedRoom): SceneInspection {
     floor_object_names: serialized.floors.map((f) => f.identifier),
     // RoomPlan's JSON has no separate ceiling array - rooms are typically open-top scans.
     ceiling_object_names: [],
+    // RoomPlan gives the floor's real walkable contour directly (unlike walls, which
+    // are box-only) - one polygon (a loop of [worldX, worldZ] points) per floors[]
+    // entity, so a non-rectangular/L-shaped room renders and validates against its
+    // actual shape instead of a bounding rectangle that overflows past the walls.
+    floor_polygons: serialized.floors.map((f) => entityWorldPolygon(f)).filter((p) => p.length >= 3),
   };
 
   // Per-category counters, matching the old "<Category><Index>" naming (Chair0, Chair1, Storage0, ...)
