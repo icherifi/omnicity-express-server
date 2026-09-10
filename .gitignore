@@ -28,6 +28,9 @@ supabase/.temp
 
 temp.js
 
+# Downloaded/cached IKEA product data + GLB models (src/services/ikeaService.ts)
+ikea_cache
+
 # Blender bridge (Python service deployed to the VM)
 blender-bridge/.env
 blender-bridge/sessions
