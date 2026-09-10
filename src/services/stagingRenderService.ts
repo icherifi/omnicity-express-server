@@ -12,11 +12,18 @@ import { RoomPlanCapturedRoom, StagingAction } from "../types/staging.types";
 const RENDER_BASE_URL = (process.env.STAGING_RENDER_BASE_URL || "http://localhost:3000").replace(/\/$/, "");
 const PAYLOAD_URL_PATTERN = "**/internal/staging-render/payload";
 const RENDER_TIMEOUT_MS = 30_000;
-const VIEWPORT = { width: 1280, height: 800 };
+// Wide enough for the 2-column top-down + perspective grid, each view still a
+// reasonable individual frame.
+const VIEWPORT = { width: 2000, height: 900 };
 
 export interface RenderPayload {
   scanData: RoomPlanCapturedRoom;
   actions: StagingAction[];
+}
+
+export interface RenderedView {
+  key: string;
+  buffer: Buffer;
 }
 
 /**
@@ -32,7 +39,10 @@ export class StagingRenderSession {
     return this.browser;
   }
 
-  async renderPreview(payload: RenderPayload): Promise<Buffer> {
+  /** One screenshot per rendered view (today: a top-down plan view + an eye-level
+   * perspective view - see stagingCameraViews.ts on the frontend). Cropping to
+   * each view is just Playwright's per-element screenshot, no manual pixel math. */
+  async renderPreview(payload: RenderPayload): Promise<RenderedView[]> {
     const browser = await this.ensureBrowser();
     const page: Page = await browser.newPage({ viewport: VIEWPORT });
     try {
@@ -47,7 +57,14 @@ export class StagingRenderSession {
       // boundaries count a failed load as "settled"), so this never hangs on one
       // bad IKEA item - only a total page-level failure would time out here.
       await page.waitForSelector('[data-render-ready="true"]', { timeout: RENDER_TIMEOUT_MS });
-      return await page.screenshot();
+
+      const elements = await page.locator("[data-view]").all();
+      const views: RenderedView[] = [];
+      for (const el of elements) {
+        const key = (await el.getAttribute("data-view")) ?? `view-${views.length}`;
+        views.push({ key, buffer: await el.screenshot() });
+      }
+      return views;
     } finally {
       await page.close();
     }

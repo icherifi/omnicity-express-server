@@ -13,6 +13,7 @@ import {
   RoomShellInfo,
   SceneInspection,
 } from "../types/staging.types";
+import { LocalBoundingBox } from "./glbGeometryService";
 
 function entityWorldMatrix(entity: RoomPlanEntity): THREE.Matrix4 {
   return new THREE.Matrix4().fromArray(entity.transform);
@@ -62,6 +63,121 @@ function entityPositionAndYaw(entity: RoomPlanEntity): { position: [number, numb
 
 function categoryName(entity: RoomPlanEntity): string {
   return Object.keys(entity.category)[0] ?? "unknown";
+}
+
+const WALL_COLLISION_PAD_M = 0.1;
+
+export interface WallBox {
+  object_name: string;
+  /** Wall's own inverse world matrix (16 floats) - transforms a world point into
+   * the wall's local frame (local X = width axis, local Y = height axis, local Z
+   * = thickness axis). Collision testing happens in this local frame, NOT as a
+   * precomputed world-space AABB: a wall is typically several meters wide and
+   * essentially never perfectly axis-aligned in a real scan, and even a small
+   * rotation angle balloons a world AABB's thickness by roughly
+   * wallWidth * sin(angle) - for a 6m wall that's tens of centimeters from just a
+   * few degrees of yaw, dwarfing the actual 10cm pad and causing false positives
+   * on ordinary flush-against-the-wall placements. Doing the test in the wall's
+   * own local frame (where the wall is trivially axis-aligned by definition)
+   * avoids that entirely. */
+  inverseMatrix: number[];
+  halfWidth: number;
+  halfHeight: number;
+  padDepth: number;
+  /** +1 if the wall's local +Z axis points outward (away from the room center),
+   * -1 if it points inward - determines which side of local Z=0 the pad region
+   * (never both, never inward) occupies. */
+  outwardSign: 1 | -1;
+}
+
+function buildWallBox(wall: RoomPlanEntity, roomCenter: THREE.Vector3, padMeters: number): WallBox {
+  const [w, h] = wall.dimensions;
+  const matrix = entityWorldMatrix(wall);
+  const position = new THREE.Vector3();
+  const quaternion = new THREE.Quaternion();
+  const scale = new THREE.Vector3();
+  matrix.decompose(position, quaternion, scale);
+
+  const localZ = new THREE.Vector3(0, 0, 1).applyQuaternion(quaternion); // wall's thickness axis, in world space
+  const towardRoomCenter = roomCenter.clone().sub(position);
+  const outwardSign: 1 | -1 = localZ.dot(towardRoomCenter) > 0 ? -1 : 1;
+
+  return {
+    object_name: wall.identifier,
+    inverseMatrix: matrix.clone().invert().toArray(),
+    halfWidth: w / 2,
+    halfHeight: h / 2,
+    padDepth: padMeters,
+    outwardSign,
+  };
+}
+
+/** One outward-padded collision volume per wall, `object_name` matching the same
+ * raw identifier already visible to Claude via room.wall_object_names. */
+export function buildWallCollisionBoxes(
+  walls: RoomPlanEntity[],
+  room: RoomShellInfo,
+  padMeters = WALL_COLLISION_PAD_M
+): WallBox[] {
+  const roomCenter = new THREE.Vector3(
+    (room.bounds_min[0] + room.bounds_max[0]) / 2,
+    (room.bounds_min[1] + room.bounds_max[1]) / 2,
+    (room.bounds_min[2] + room.bounds_max[2]) / 2
+  );
+  return walls.map((wall) => buildWallBox(wall, roomCenter, padMeters));
+}
+
+/**
+ * Volume (m^3) of overlap between a furniture item's OWN un-rotated local box
+ * (before any world AABB is taken of it) and one wall's outward-padded collision
+ * region. Deliberately takes the item's raw `localBox` + `position` +
+ * `rotationYDegrees` rather than an already-computed world-space `placedBox`:
+ * chaining "furniture's true rotated corners -> world (via its own placement
+ * matrix) -> wall-local (via the wall's inverse matrix)" as ONE combined
+ * transform, then taking the local-frame AABB only once, at the very end.
+ * Transforming an ALREADY-AABB'd world box into the wall's frame instead would
+ * compound two rounds of AABB-of-a-rotated-box looseness (once for the world
+ * AABB, again rotating that loose box into the wall's frame) - easily enough
+ * extra padding on each side to swallow the whole 10cm pad and false-positive on
+ * an ordinary flush-against-the-wall placement.
+ */
+export function wallClipVolume(
+  wall: WallBox,
+  localBox: LocalBoundingBox,
+  position: [number, number, number],
+  rotationYDegrees: number
+): number {
+  const quaternion = new THREE.Quaternion().setFromAxisAngle(
+    new THREE.Vector3(0, 1, 0),
+    THREE.MathUtils.degToRad(rotationYDegrees)
+  );
+  const placementMatrix = new THREE.Matrix4().compose(
+    new THREE.Vector3(...position),
+    quaternion,
+    new THREE.Vector3(1, 1, 1)
+  );
+  const combined = new THREE.Matrix4().fromArray(wall.inverseMatrix).multiply(placementMatrix);
+
+  const corners: [number, number, number][] = [
+    [localBox.min[0], localBox.min[1], localBox.min[2]], [localBox.max[0], localBox.min[1], localBox.min[2]],
+    [localBox.min[0], localBox.max[1], localBox.min[2]], [localBox.min[0], localBox.min[1], localBox.max[2]],
+    [localBox.max[0], localBox.max[1], localBox.min[2]], [localBox.max[0], localBox.min[1], localBox.max[2]],
+    [localBox.min[0], localBox.max[1], localBox.max[2]], [localBox.max[0], localBox.max[1], localBox.max[2]],
+  ];
+  const localFrameBox = new THREE.Box3();
+  for (const c of corners) localFrameBox.expandByPoint(new THREE.Vector3(...c).applyMatrix4(combined));
+
+  const padMin = wall.outwardSign > 0 ? 0 : -wall.padDepth;
+  const padMax = wall.outwardSign > 0 ? wall.padDepth : 0;
+  const wallLocalBox = new THREE.Box3(
+    new THREE.Vector3(-wall.halfWidth, -wall.halfHeight, padMin),
+    new THREE.Vector3(wall.halfWidth, wall.halfHeight, padMax)
+  );
+
+  const overlap = localFrameBox.clone().intersect(wallLocalBox);
+  if (overlap.isEmpty()) return 0;
+  const size = overlap.getSize(new THREE.Vector3());
+  return size.x * size.y * size.z;
 }
 
 export function inspectRoom(serialized: RoomPlanCapturedRoom): SceneInspection {

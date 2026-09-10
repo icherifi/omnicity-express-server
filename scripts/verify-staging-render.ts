@@ -40,12 +40,14 @@ async function main() {
   try {
     console.log("rendering...");
     const start = Date.now();
-    const png = await session.renderPreview({ scanData, actions });
-    console.log(`rendered in ${Date.now() - start}ms, ${png.length} bytes`);
+    const views = await session.renderPreview({ scanData, actions });
+    console.log(`rendered ${views.length} view(s) in ${Date.now() - start}ms`);
 
-    const outPath = path.join(SCRATCH, "staging_render_phase3.png");
-    fs.writeFileSync(outPath, png);
-    console.log("saved to", outPath);
+    for (const view of views) {
+      const outPath = path.join(SCRATCH, `staging_render_phase3_${view.key}.png`);
+      fs.writeFileSync(outPath, view.buffer);
+      console.log(`saved ${view.key} (${view.buffer.length} bytes) to`, outPath);
+    }
   } finally {
     await session.close();
   }

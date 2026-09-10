@@ -19,9 +19,12 @@ async function main() {
   const session = new StagingRenderSession();
   try {
     const start = Date.now();
-    const png = await session.renderPreview({ scanData, actions });
-    console.log(`rendered in ${Date.now() - start}ms despite one broken item, ${png.length} bytes`);
-    fs.writeFileSync(path.join(SCRATCH, "staging_render_broken.png"), png);
+    const views = await session.renderPreview({ scanData, actions });
+    console.log(`rendered ${views.length} view(s) in ${Date.now() - start}ms despite one broken item`);
+    for (const view of views) {
+      console.log(`  ${view.key}: ${view.buffer.length} bytes`);
+      fs.writeFileSync(path.join(SCRATCH, `staging_render_broken_${view.key}.png`), view.buffer);
+    }
   } finally {
     await session.close();
   }
