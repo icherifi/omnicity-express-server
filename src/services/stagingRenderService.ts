@@ -11,7 +11,14 @@ import { RoomPlanCapturedRoom, StagingAction } from "../types/staging.types";
 
 const RENDER_BASE_URL = (process.env.STAGING_RENDER_BASE_URL || "http://localhost:3000").replace(/\/$/, "");
 const PAYLOAD_URL_PATTERN = "**/internal/staging-render/payload";
-const RENDER_TIMEOUT_MS = 30_000;
+// A cold Next.js dev-mode compile of this route (heavy Three.js/drei bundle,
+// two Canvas mounts) on the very first hit after a dev-server restart can alone
+// take longer than 30s, independent of anything actually slow at runtime -
+// confirmed directly: a fresh dev server's first render call timed out at 30s
+// navigating, while every call after the route was warm completed well within
+// it. Generous enough to absorb that one-time cost without masking a genuinely
+// hung render.
+const RENDER_TIMEOUT_MS = 60_000;
 // Wide enough for the 2-column top-down + perspective grid, each view still a
 // reasonable individual frame.
 const VIEWPORT = { width: 2000, height: 900 };
@@ -62,7 +69,12 @@ export class StagingRenderSession {
       const views: RenderedView[] = [];
       for (const el of elements) {
         const key = (await el.getAttribute("data-view")) ?? `view-${views.length}`;
-        views.push({ key, buffer: await el.screenshot() });
+        // Without an explicit timeout this falls back to Playwright's own 30s
+        // action default, independent of RENDER_TIMEOUT_MS above - too tight for
+        // a heavily-furnished room (20+ GLBs across two Canvas mounts genuinely
+        // takes a while for Chromium to settle), confirmed directly by a real
+        // run timing out here on a large real layout.
+        views.push({ key, buffer: await el.screenshot({ timeout: RENDER_TIMEOUT_MS }) });
       }
       return views;
     } finally {

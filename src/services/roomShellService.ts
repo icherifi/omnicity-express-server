@@ -10,10 +10,12 @@ import {
   DetectedObject,
   RoomPlanCapturedRoom,
   RoomPlanEntity,
+  RoomSection,
   RoomShellInfo,
   SceneInspection,
 } from "../types/staging.types";
 import { LocalBoundingBox } from "./glbGeometryService";
+import { add, axesOf, dot, neg, pointInPolygon, polygonArea, polygonCentroid, sub, Vec2, xz } from "./geometry2d";
 
 function entityWorldMatrix(entity: RoomPlanEntity): THREE.Matrix4 {
   return new THREE.Matrix4().fromArray(entity.transform);
@@ -180,6 +182,24 @@ export function wallClipVolume(
   return size.x * size.y * size.z;
 }
 
+/** Shared factory for a DetectedObject-shaped entry - used both for furniture
+ * (friendly "Category0" names, category read from the entity itself) and for
+ * walls/doors/windows (object_name = the entity's own raw identifier, since
+ * that's already what Claude sees via room.wall_object_names and what
+ * set_wall_color/the placement-intent anchors reference; category forced to a
+ * fixed label rather than read from the entity). */
+function entityToDetectedObject(entity: RoomPlanEntity, objectName: string, categoryOverride?: string): DetectedObject {
+  const { position, rotationYDegrees } = entityPositionAndYaw(entity);
+  return {
+    object_name: objectName,
+    guessed_category: categoryOverride ?? categoryName(entity),
+    position,
+    rotation_y_degrees: rotationYDegrees,
+    dimensions_cm: entity.dimensions.map((d) => d * 100) as [number, number, number],
+    roomplan_identifier: entity.identifier,
+  };
+}
+
 export function inspectRoom(serialized: RoomPlanCapturedRoom): SceneInspection {
   const shellEntities = [
     ...serialized.walls,
@@ -215,16 +235,117 @@ export function inspectRoom(serialized: RoomPlanCapturedRoom): SceneInspection {
     const index = categoryCounts.get(category) ?? 0;
     categoryCounts.set(category, index + 1);
     const label = category.charAt(0).toUpperCase() + category.slice(1);
-    const { position, rotationYDegrees } = entityPositionAndYaw(entity);
-    return {
-      object_name: `${label}${index}`,
-      guessed_category: category,
-      position,
-      rotation_y_degrees: rotationYDegrees,
-      dimensions_cm: entity.dimensions.map((d) => d * 100) as [number, number, number],
-      roomplan_identifier: entity.identifier,
-    };
+    return entityToDetectedObject(entity, `${label}${index}`);
   });
 
-  return { room, objects };
+  const walls = serialized.walls.map((w) => entityToDetectedObject(w, w.identifier, "wall"));
+  const doors = serialized.doors.map((d) => entityToDetectedObject(d, d.identifier, "door"));
+  const windows = serialized.windows.map((w) => entityToDetectedObject(w, w.identifier, "window"));
+
+  const sections: RoomSection[] = (serialized.sections ?? []).map((s) => ({
+    label: s.label,
+    center: [s.center[0] ?? 0, s.center[1] ?? 0, s.center[2] ?? 0],
+  }));
+
+  return { room, objects, walls, doors, windows, sections };
+}
+
+export interface WallDescriptor {
+  identifier: string;
+  position: [number, number, number];
+  rotationYDegrees: number;
+  widthM: number;
+  heightM: number;
+}
+
+export interface OpeningDescriptor {
+  identifier: string;
+  parentWallIdentifier: string | null;
+  position: [number, number, number];
+  rotationYDegrees: number;
+  widthM: number;
+  heightM: number;
+}
+
+/** Structured room geometry for the placement solver/validators/scorer - distinct
+ * from SceneInspection (which is what Claude reads as JSON text): this carries
+ * implementation-detail fields (wall collision matrices) that have no business in
+ * an LLM prompt, decomposed into a shape the solver can use directly instead of
+ * re-parsing raw RoomPlan transforms itself. */
+export interface RoomGeometry {
+  walls: WallDescriptor[];
+  doors: OpeningDescriptor[];
+  windows: OpeningDescriptor[];
+  wallBoxes: WallBox[];
+  /** The largest floor polygon by area (world XZ points) - null if the scan has
+   * none (older/malformed data; callers fall back to bounds-based approximations). */
+  floorPolygon: [number, number][] | null;
+  boundsMin: [number, number, number];
+  boundsMax: [number, number, number];
+}
+
+export function buildRoomGeometry(serialized: RoomPlanCapturedRoom, room: RoomShellInfo): RoomGeometry {
+  const toWallDescriptor = (wall: RoomPlanEntity): WallDescriptor => {
+    const { position, rotationYDegrees } = entityPositionAndYaw(wall);
+    return { identifier: wall.identifier, position, rotationYDegrees, widthM: wall.dimensions[0], heightM: wall.dimensions[1] };
+  };
+  const toOpeningDescriptor = (opening: RoomPlanEntity): OpeningDescriptor => {
+    const { position, rotationYDegrees } = entityPositionAndYaw(opening);
+    return {
+      identifier: opening.identifier,
+      parentWallIdentifier: (opening.parentIdentifier as string | null | undefined) ?? null,
+      position,
+      rotationYDegrees,
+      widthM: opening.dimensions[0],
+      heightM: opening.dimensions[1] || 2.1,
+    };
+  };
+
+  const floorPolygon =
+    room.floor_polygons.length > 0
+      ? room.floor_polygons.reduce((a, b) => (polygonArea(b) > polygonArea(a) ? b : a))
+      : null;
+
+  return {
+    walls: serialized.walls.map(toWallDescriptor),
+    doors: serialized.doors.map(toOpeningDescriptor),
+    windows: serialized.windows.map(toOpeningDescriptor),
+    wallBoxes: buildWallCollisionBoxes(serialized.walls, room),
+    floorPolygon,
+    boundsMin: room.bounds_min,
+    boundsMax: room.bounds_max,
+  };
+}
+
+const WALL_INWARD_PROBE_M = 0.3;
+
+/** Room-center reference point: the floor polygon's real centroid, falling back
+ * to the plain bounds midpoint if the scan has no polygon data. Shared by the
+ * solver (room_center anchor, wall-inward direction), validator (floor-polygon
+ * push direction), and scorer (grid setup). */
+export function floorCentroid(geometry: RoomGeometry): Vec2 {
+  if (!geometry.floorPolygon || geometry.floorPolygon.length < 3) {
+    return [(geometry.boundsMin[0] + geometry.boundsMax[0]) / 2, (geometry.boundsMin[2] + geometry.boundsMax[2]) / 2];
+  }
+  return polygonCentroid(geometry.floorPolygon);
+}
+
+/** The direction perpendicular to a wall that points into the room (toward the
+ * floor polygon's centroid) - the "push furniture this way to get away from the
+ * wall" direction, needed by the solver (against_wall anchoring), the validator
+ * (wall-penetration correction), and the scorer alike. Sanity-checked: stepping
+ * 30cm inward must land on real floor, or the wall is flagged unreliable (a
+ * curved wall, an outlier polygon) by returning null, rather than silently
+ * producing a furniture item facing the wrong way. */
+export function wallInwardDirection(wall: WallDescriptor, geometry: RoomGeometry): Vec2 | null {
+  const { forward: localZ } = axesOf(wall.rotationYDegrees);
+  const centroid = floorCentroid(geometry);
+  const towardCentroid = sub(centroid, xz(wall.position));
+  const inward: Vec2 = dot(localZ, towardCentroid) > 0 ? localZ : neg(localZ);
+
+  if (geometry.floorPolygon && geometry.floorPolygon.length >= 3) {
+    const probe = add(xz(wall.position), inward, WALL_INWARD_PROBE_M);
+    if (!pointInPolygon(probe, geometry.floorPolygon)) return null;
+  }
+  return inward;
 }

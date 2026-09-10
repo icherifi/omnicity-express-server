@@ -19,8 +19,8 @@ const SCRATCH =
 // Same real object positions used for the Phase 2 manual check (Sink0/Chair0 -
 // verified to be in open floor space, not inside a partition wall).
 const actions: StagingAction[] = [
-  { type: "place", item_no: "70294339", position: [1.35, -1.18, -0.98], rotation_y_degrees: 0 },
-  { type: "place", item_no: "70294339", position: [-3.66, -1.18, 6.01], rotation_y_degrees: 90 },
+  { type: "place", instance_name: "item_a", item_no: "70294339", position: [1.35, -1.18, -0.98], rotation_y_degrees: 0 },
+  { type: "place", instance_name: "item_b", item_no: "70294339", position: [-3.66, -1.18, 6.01], rotation_y_degrees: 90 },
   { type: "wall_color", wall_object_names: "all", material_id: "soft_greige", hex_color: "#E3DCCF" },
   {
     type: "floor_material",

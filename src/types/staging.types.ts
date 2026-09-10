@@ -30,9 +30,88 @@ export interface DetectedObject {
   roomplan_identifier?: string;
 }
 
+export interface RoomSection {
+  label: string;
+  center: [number, number, number];
+}
+
 export interface SceneInspection {
   room: RoomShellInfo;
   objects: DetectedObject[];
+  /** Structured (not just bounding-box-contributing) wall/door/window data, in the
+   * same DetectedObject shape as furniture - lets Claude reason textually about
+   * them (e.g. "don't block this door") instead of only seeing them as pixels in
+   * render_preview. guessed_category is always "wall"/"door"/"window" here. */
+  walls: DetectedObject[];
+  doors: DetectedObject[];
+  windows: DetectedObject[];
+  /** RoomPlan's own room-zone labels ("bedroom", "kitchen", "bathroom", ...),
+   * passed through as-is - not used for hard/soft constraints today, but cheap
+   * context for Claude's own judgement. */
+  sections: RoomSection[];
+}
+
+// --- Placement intent vocabulary (Phase 3) ---------------------------------
+// Claude expresses WHERE/WHICH-WAY relationally instead of picking raw
+// coordinates; placementSolverService.ts turns one of these into an exact
+// (position, rotation) using the room's real geometry. snake_case throughout to
+// match the tool input_schema wire format directly (no remapping layer).
+
+export type WallAlignment = "center" | { from_corner: "start" | "end"; offset_cm: number };
+
+export type PlacementAnchor =
+  | { kind: "against_wall"; wall_id: string; along?: WallAlignment; gap_cm?: number }
+  | { kind: "in_corner"; wall_id_a: string; wall_id_b: string; gap_cm?: number }
+  | { kind: "room_center" }
+  | {
+      kind: "relative_to";
+      target_id: string;
+      relation: "left_of" | "right_of" | "in_front_of" | "behind";
+      gap_cm?: number;
+      align?: "center" | "start" | "end";
+    };
+
+export type FacingIntent =
+  | { kind: "away_from_wall" }
+  | { kind: "match_target" }
+  | { kind: "toward_target" }
+  | { kind: "toward_room_center" }
+  | { kind: "toward_object"; target_id: string }
+  | { kind: "toward_wall"; wall_id: string }
+  | { kind: "toward_window"; window_id: string }
+  | { kind: "explicit_degrees"; degrees: number };
+
+export interface PlacementIntent {
+  anchor: PlacementAnchor;
+  /** Omitted = defaulted from the anchor/relation (see placementSolverService.ts). */
+  facing?: FacingIntent;
+  /** Bounded fine-tune (±40cm each axis) applied AFTER the anchor/facing solve, in
+   * the item's OWN solved local frame (forward/lateral) - NOT world coordinates.
+   * Still fully re-validated against every hard constraint; never bypasses them. */
+  nudge_cm?: { forward?: number; lateral?: number };
+}
+
+export interface HardConstraintViolation {
+  constraint: "wall_penetration" | "furniture_overlap" | "door_clearance" | "window_blocked" | "floor_polygon" | "ceiling_height";
+  detail: string;
+}
+
+export interface ValidationResult {
+  ok: boolean;
+  corrected: boolean;
+  correction_reason?: string;
+  position: [number, number, number];
+  rotation_y_degrees: number;
+  violations: HardConstraintViolation[];
+}
+
+export interface SoftScores {
+  circulation: number;
+  fill: number;
+  blocked_fraction: number;
+  focal_point: number | null;
+  scale: number;
+  overall: number;
 }
 
 export interface IkeaSearchResult {
@@ -76,7 +155,20 @@ export interface MaterialCatalog {
 }
 
 export type StagingAction =
-  | { type: "place"; item_no: string; position: [number, number, number]; rotation_y_degrees: number }
+  | {
+      type: "place";
+      /** Claude's own handle for this item, unique across the run - lets a later
+       * adjust_placement/relative_to intent reference it, and lets adjust_placement
+       * find+update this exact action in place instead of appending a duplicate. */
+      instance_name: string;
+      item_no: string;
+      position: [number, number, number];
+      rotation_y_degrees: number;
+      /** The intention that resolved to this position/rotation, if placed via the
+       * intent-based tools - kept for audit/debugging (why did Claude put this
+       * here), never read back by the renderer. */
+      intent?: PlacementIntent;
+    }
   | {
       type: "replace";
       object_name: string;
@@ -85,6 +177,7 @@ export type StagingAction =
       item_no: string;
       position?: [number, number, number];
       rotation_y_degrees?: number;
+      intent?: PlacementIntent;
     }
   | { type: "wall_color"; wall_object_names: string[] | "all"; material_id: string; hex_color: string }
   | {
@@ -130,5 +223,8 @@ export interface RoomPlanCapturedRoom {
   doors: RoomPlanEntity[];
   windows: RoomPlanEntity[];
   openings: RoomPlanEntity[];
+  /** Apple RoomPlan's own room-zone labels - not geometry, just {label, center}
+   * per detected zone (e.g. "kitchen", "bedroom"). Optional: older scans predate it. */
+  sections?: Array<{ label: string; story?: number; center: number[] }>;
   [key: string]: unknown;
 }
