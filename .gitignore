@@ -30,12 +30,3 @@ temp.js
 
 # Downloaded/cached IKEA product data + GLB models (src/services/ikeaService.ts)
 ikea_cache
-
-# Blender bridge (Python service deployed to the VM)
-blender-bridge/.env
-blender-bridge/sessions
-blender-bridge/ikea_cache
-blender-bridge/__pycache__
-blender-bridge/materials/__pycache__
-# downloaded CC0 textures (large binaries) - keep manifest.json + fetch_materials.py tracked, re-fetch the rest
-blender-bridge/materials/*/
