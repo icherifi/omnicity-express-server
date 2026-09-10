@@ -217,13 +217,20 @@ function buildTools(materials: MaterialCatalog): Anthropic.Tool[] {
   ];
 }
 
-function systemPrompt(inspection: SceneInspection, materials: MaterialCatalog, roundsRemaining: number): string {
+/**
+ * Deliberately fully static for the whole run (no round-dependent text) so this
+ * is byte-identical on every one of up to MAX_TOOL_ROUNDS calls - the
+ * precondition for prompt caching to actually hit. A single explicit
+ * cache_control breakpoint on this block caches it AND every tool definition
+ * (tools render before system in the request), so a 35-round run pays full
+ * price for this large block (curated palettes + the whole room JSON) exactly
+ * once instead of 35 times. The round-based convergence nudge moves to a plain
+ * text block appended to the tool-results message instead (see runStaging) -
+ * that keeps the system prompt static while Claude still sees the nudge.
+ */
+function systemPrompt(inspection: SceneInspection, materials: MaterialCatalog): string {
   const wallList = materials.walls.map((w) => `${w.material_id} (${w.name})`).join(", ");
   const floorList = materials.floors.map((f) => `${f.material_id} (${f.name})`).join(", ");
-  const convergenceNudge =
-    roundsRemaining <= CONVERGENCE_WARNING_ROUNDS_REMAINING
-      ? `\n\nATTENTION : il ne reste que ${roundsRemaining} tour(s) avant la limite. Termine et appelle finish_staging maintenant, quitte à laisser l'agencement imparfait plutôt que de ne rien finaliser.`
-      : "";
 
   return `Tu es un décorateur d'intérieur virtuel avec une liberté créative totale sur l'agencement : tu n'es pas obligé de garder le mobilier près de sa position scannée d'origine, repense l'agencement pour qu'il soit le plus vendeur possible. Tu reçois la géométrie d'une pièce scannée (murs, portes, fenêtres, sol, mobilier détecté). Ton objectif : produire une mise en scène réaliste et vendeuse ("home staging"), en utilisant exclusivement le catalogue IKEA (recherche live via search_ikea).
 
@@ -246,7 +253,7 @@ Couleurs de mur disponibles : ${wallList}
 Matériaux de sol disponibles : ${floorList}
 
 Géométrie de la pièce (issue du scan) :
-${JSON.stringify(inspection, null, 2)}${convergenceNudge}`;
+${JSON.stringify(inspection, null, 2)}`;
 }
 
 async function callTool(name: string, input: any, ctx: StagingContext): Promise<ToolResultContent> {
@@ -341,16 +348,40 @@ export async function runStaging(serialized: RoomPlanCapturedRoom): Promise<RunS
   ];
 
   let finished = false;
+  // Real per-round usage, logged so a cost regression shows up immediately
+  // instead of only at the bill - cache_read_input_tokens should climb toward
+  // the full accumulated prefix each round once caching is actually hitting;
+  // see the cumulative summary logged after the loop for the run total.
+  const usageTotals = { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 };
+
+  // Cached once - byte-identical on every round (see systemPrompt's own note).
+  const system: Anthropic.TextBlockParam[] = [
+    { type: "text", text: systemPrompt(inspection, materials), cache_control: { type: "ephemeral" } },
+  ];
 
   try {
     for (let round = 0; round < MAX_TOOL_ROUNDS && !finished; round++) {
       const response = await anthropic.messages.create({
         model: DEFAULT_MODEL,
         max_tokens: 8192,
-        system: systemPrompt(inspection, materials, MAX_TOOL_ROUNDS - round),
+        system,
         tools,
         messages,
+        // Automatically caches the growing message history's tail (the system
+        // breakpoint above already covers tools+system) - the "robust
+        // combination for agent loops": one explicit breakpoint on the static
+        // prefix, automatic caching for everything volatile after it.
+        cache_control: { type: "ephemeral" },
       });
+
+      const usage = response.usage;
+      usageTotals.input += usage.input_tokens;
+      usageTotals.output += usage.output_tokens;
+      usageTotals.cacheRead += usage.cache_read_input_tokens ?? 0;
+      usageTotals.cacheCreation += usage.cache_creation_input_tokens ?? 0;
+      console.log(
+        `[staging] round ${round + 1}/${MAX_TOOL_ROUNDS} usage: input=${usage.input_tokens} output=${usage.output_tokens} cache_read=${usage.cache_read_input_tokens ?? 0} cache_creation=${usage.cache_creation_input_tokens ?? 0}`
+      );
 
       messages.push({ role: "assistant", content: response.content });
 
@@ -363,15 +394,29 @@ export async function runStaging(serialized: RoomPlanCapturedRoom): Promise<RunS
         break;
       }
 
-      const toolResults: Anthropic.ToolResultBlockParam[] = [];
+      const toolResults: Array<Anthropic.ToolResultBlockParam | Anthropic.TextBlockParam> = [];
       for (const toolUse of toolUses) {
         const output = await callTool(toolUse.name, toolUse.input, ctx);
         toolResults.push({ type: "tool_result", tool_use_id: toolUse.id, content: output });
         if (toolUse.name === "finish_staging" && output === "Staging finished.") finished = true;
       }
 
+      // Round-dependent nudge goes here, NOT in the system prompt, so the
+      // cached system+tools prefix stays byte-identical for the whole run.
+      const roundsRemaining = MAX_TOOL_ROUNDS - round - 1;
+      if (roundsRemaining <= CONVERGENCE_WARNING_ROUNDS_REMAINING && roundsRemaining > 0) {
+        toolResults.push({
+          type: "text",
+          text: `ATTENTION : il ne reste que ${roundsRemaining} tour(s) avant la limite. Termine et appelle finish_staging maintenant, quitte à laisser l'agencement imparfait plutôt que de ne rien finaliser.`,
+        });
+      }
+
       messages.push({ role: "user", content: toolResults });
     }
+
+    console.log(
+      `[staging] TOTAL usage: input=${usageTotals.input} output=${usageTotals.output} cache_read=${usageTotals.cacheRead} cache_creation=${usageTotals.cacheCreation}`
+    );
 
     if (!finished) {
       errors.push(
