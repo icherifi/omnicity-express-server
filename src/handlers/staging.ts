@@ -94,13 +94,28 @@ export const startStaging = async (req: Request, res: Response) => {
       .eq('id', id);
   } catch (e: any) {
     console.error('Staging failed', e);
-    await supabase
-      .from('scans')
-      .update({
-        staging_status: 'error',
-        staging_summary: { errors: [e?.message ?? String(e)] } as any,
-      })
-      .eq('id', id);
+    // This write itself can hit the same kind of transient network blip that just
+    // failed the run (e.g. a momentary DNS hiccup affecting more than one host) -
+    // without its own retry, that leaves the row stuck at "processing" forever,
+    // since nothing else will ever mark it as done or failed.
+    const markError = () =>
+      supabase
+        .from('scans')
+        .update({
+          staging_status: 'error',
+          staging_summary: { errors: [e?.message ?? String(e)] } as any,
+        })
+        .eq('id', id);
+
+    let { error: markErrorFailed } = await markError();
+    if (markErrorFailed) {
+      console.error('Failed to record staging error, retrying once', markErrorFailed);
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      ({ error: markErrorFailed } = await markError());
+    }
+    if (markErrorFailed) {
+      console.error('Giving up recording staging error - scan will stay stuck as "processing"', markErrorFailed);
+    }
   }
 };
 

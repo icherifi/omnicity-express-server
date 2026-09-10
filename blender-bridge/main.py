@@ -11,7 +11,10 @@ import json
 import logging
 import os
 import shutil
+import struct
 import uuid
+import zlib
+import zipfile
 from pathlib import Path
 
 import requests
@@ -23,19 +26,93 @@ from pydantic import BaseModel
 load_dotenv()
 
 from blender_executor import BlenderScriptError, run_script
+
+
+def repack_usdz_aligned(path: Path, alignment: int = 64) -> None:
+    """The USDZ spec requires every archive entry's file data to start at an
+    `alignment`-byte offset (uncompressed/STORED) so viewers can mmap assets
+    directly instead of copying. bpy.ops.wm.usd_export doesn't do this - real
+    exports came out with zero aligned entries, which made three-usdz-loader's
+    WASM/USD engine fail to resolve every single embedded texture ("Unknown
+    file"), even ones that were perfectly valid, unconverted source JPGs.
+    Verified against a real broken export: identical entries, byte-identical
+    content, all offsets 64-byte aligned afterwards.
+
+    Separately: bpy's USD material network references textures as "./textures/x.jpg"
+    but usd_export writes the zip entry itself as "textures/x.jpg" (no "./"). Most
+    USDZ readers normalize that away, but three-usdz-loader's WASM/USD build does a
+    literal string lookup and fails ("Unknown file") even once alignment is fixed -
+    confirmed by re-uploading an alignment-only fix (still broken) vs. one with this
+    rename too (errors gone, textures render). Renaming the zip entries to match is
+    the cheaper, more certain fix than trying to change what bpy writes as a reference."""
+    with zipfile.ZipFile(path, "r") as zin:
+        entries = [
+            ("./" + item.filename if item.filename.startswith("textures/") else item.filename, zin.read(item.filename))
+            for item in zin.infolist()
+        ]
+
+    tmp_path = path.with_name(path.name + ".tmp")
+    with open(tmp_path, "wb") as out:
+        central_directory = []
+        for name, data in entries:
+            name_bytes = name.encode("utf-8")
+            header_size = 30 + len(name_bytes)
+            unpadded_data_start = out.tell() + header_size
+            pad_len = (-unpadded_data_start) % alignment
+            extra = b"\x00" * pad_len
+
+            crc = zlib.crc32(data) & 0xFFFFFFFF
+            entry_offset = out.tell()
+            local_header = struct.pack(
+                "<4sHHHHHIIIHH",
+                b"PK\x03\x04", 20, 0, 0, 0, 0,
+                crc, len(data), len(data),
+                len(name_bytes), len(extra),
+            )
+            out.write(local_header)
+            out.write(name_bytes)
+            out.write(extra)
+            out.write(data)
+            central_directory.append((name_bytes, crc, len(data), entry_offset))
+
+        cd_start = out.tell()
+        for name_bytes, crc, size, entry_offset in central_directory:
+            central_header = struct.pack(
+                "<4sHHHHHHIIIHHHHHII",
+                b"PK\x01\x02", 20, 20, 0, 0, 0, 0,
+                crc, size, size,
+                len(name_bytes), 0, 0, 0, 0, 0,
+                entry_offset,
+            )
+            out.write(central_header)
+            out.write(name_bytes)
+        cd_size = out.tell() - cd_start
+
+        eocd = struct.pack(
+            "<4sHHHHIIH",
+            b"PK\x05\x06", 0, 0,
+            len(central_directory), len(central_directory),
+            cd_size, cd_start, 0,
+        )
+        out.write(eocd)
+
+    tmp_path.replace(path)
 from ikea_lib import IkeaApiWrapper, IkeaException
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("blender-bridge")
 
 API_KEY = os.environ.get("BRIDGE_API_KEY")
-SESSIONS_DIR = Path(os.environ.get("BRIDGE_SESSIONS_DIR", "sessions"))
+# Resolved to absolute: the Blender subprocess runs with its cwd set to a throwaway
+# temp dir (see blender_executor.py), not this process's cwd, so a relative path here
+# would silently fail to resolve inside the generated bpy scripts.
+SESSIONS_DIR = Path(os.environ.get("BRIDGE_SESSIONS_DIR", "sessions")).resolve()
 SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
 # Base URL this bridge is reachable at from the Express server (e.g. https://blender-vm.example.com or a VPN address).
 PUBLIC_BASE_URL = os.environ.get("BRIDGE_PUBLIC_URL", "http://localhost:8000").rstrip("/")
 
 ikea = IkeaApiWrapper(os.environ.get("IKEA_COUNTRY", "fr"), os.environ.get("IKEA_LANGUAGE", "fr"))
-ikea.cache_dir = Path(os.environ.get("IKEA_CACHE_DIR", "ikea_cache"))
+ikea.cache_dir = Path(os.environ.get("IKEA_CACHE_DIR", "ikea_cache")).resolve()
 ikea.cache_dir.mkdir(parents=True, exist_ok=True)
 
 MATERIALS_DIR = Path(__file__).parent / "materials"
@@ -209,6 +286,22 @@ bpy.ops.render.render(write_still=True)
 """
 
 EXPORT_SCRIPT_TEMPLATE = """
+import os
+
+# The web viewer (three-usdz-loader) only recognizes .png/.jpg/.jpeg textures.
+# IKEA source models come in via glTF and can carry .webp textures, which would
+# otherwise get embedded as-is and make the exported file fail to render at all.
+# JPEG (not PNG) on purpose: re-encoding every converted texture as PNG previously
+# pushed a real export over Supabase Storage's 50MiB object limit - these are web
+# preview textures, not archival assets, so lossy compression is the right trade.
+bpy.context.scene.render.image_settings.file_format = 'JPEG'
+bpy.context.scene.render.image_settings.quality = 85
+for img in list(bpy.data.images):
+    if img.source == 'FILE' and img.file_format not in ('PNG', 'JPEG'):
+        img.file_format = 'JPEG'
+        img.filepath_raw = os.path.join(bpy.app.tempdir, img.name + "_converted.jpg")
+        img.save()
+
 bpy.ops.wm.usd_export(filepath={output_path!r}, selected_objects_only=False, export_materials=True)
 """
 
@@ -255,8 +348,25 @@ if overall_min[0] == float("inf"):
 else:
     dims_cm = [(overall_max[i] - overall_min[i]) * 100 for i in range(3)]
 
+# {z} is meant as the floor-contact height, not the model's own origin - IKEA GLBs
+# don't share one consistent origin convention (some are base-anchored, some
+# center-anchored), so trusting the raw origin left some items floating roughly
+# half their own height above the floor. Shift by the model's own pre-move
+# bottom-to-origin offset so its actual lowest point lands at {z} regardless of
+# where that particular model's origin happens to sit. A Z-axis rotation doesn't
+# change any point's Z coordinate, so this offset is unaffected by rotation_z.
+z_offset = -overall_min[2] if overall_min[0] != float("inf") else 0.0
 for obj in top_level:
-    obj.location = ({x}, {y}, {z})
+    obj.location = ({x}, {y}, {z} + z_offset)
+    # IKEA's glTF assets import with rotation_mode='QUATERNION' (Blender's glTF
+    # importer sets this whenever the source node had an explicit quaternion/TRS
+    # rotation). In that mode Blender computes the object's actual transform from
+    # rotation_quaternion, not rotation_euler - so assigning rotation_euler alone
+    # was a silent no-op: every imported item kept its as-authored orientation
+    # regardless of the intended rotation_z, which is why furniture all matched
+    # each other (same default orientation) but not the room's real wall angles.
+    # Verified directly against a real downloaded IKEA GLB before this fix and after.
+    obj.rotation_mode = 'XYZ'
     obj.rotation_euler = (0, 0, math.radians({rotation_z}))
 
 for obj in imported:
@@ -398,6 +508,8 @@ def export(req: SessionRequest, _auth=Depends(require_api_key)):
         run_script(script, blend_file=working_blend)
     except BlenderScriptError as e:
         raise HTTPException(500, str(e))
+
+    repack_usdz_aligned(output_path)
 
     return {"file_url": f"{PUBLIC_BASE_URL}/files/{req.session_id}/staged.usdz"}
 

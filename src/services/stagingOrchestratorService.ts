@@ -141,9 +141,9 @@ Règles :
 - OBLIGATOIRE : choisis une couleur de mur (set_wall_color) et un matériau de sol (set_floor_material) parmi la liste fournie ci-dessous — ne saute pas cette étape, elle est vérifiée.
 - Après chaque place_furniture/replace_furniture, vérifie les dimensions réelles renvoyées (dimensions_cm) : si l'objet est manifestement trop grand/petit pour l'espace, cherche une meilleure alternative.
 - Recherche toujours avec search_ikea avant de placer ou remplacer — n'invente jamais d'item_no.
-- Les positions sont en mètres, dans le repère de la pièce fourni ci-dessous. Les rotations sont en degrés autour de l'axe Z.
+- Les positions sont en mètres, dans le repère de la pièce fourni ci-dessous. Le Z d'une position est le niveau du sol où l'objet doit reposer (le bas de l'objet — quelle que soit son origine 3D propre — sera aligné automatiquement sur ce Z) ; utilise le sol de la pièce (voir bounds_min ci-dessous) sauf pour un meuble volontairement suspendu/mural. Les rotations sont en degrés autour de l'axe Z.
 - Un avertissement de chevauchement (warning/overlapping_object_names) après place_furniture/replace_furniture ne veut pas forcément dire une erreur (un objet peut légitimement en toucher un autre, ex. une lampe sur une table) — mais vérifie que ce n'est pas une vraie collision.
-- OBLIGATOIRE : appelle render_preview au moins une fois pour regarder le résultat avant de conclure — les chiffres (dimensions, chevauchements) ne disent pas tout : un meuble qui traverse un mur, des couleurs qui jurent, une pièce qui a l'air vide ne se voient qu'à l'image.
+- OBLIGATOIRE : appelle render_preview au moins une fois pour regarder le résultat avant de conclure — les chiffres (dimensions, chevauchements) ne disent pas tout : un meuble qui traverse un mur, une orientation illogique (dossier de chaise face au mur, canapé qui ne fait pas face à la pièce), des couleurs qui jurent, une pièce qui a l'air vide ne se voient qu'à l'image. Si un meuble a l'air mal orienté, corrige rotation_z_degrees et relance replace_furniture/place_furniture sur ce même meuble.
 - Quand les trois étapes obligatoires sont faites et que la pièce est prête, appelle finish_staging avec un résumé court des choix faits.
 
 Couleurs de mur disponibles : ${wallList}
@@ -177,7 +177,8 @@ async function callTool(
   materials: MaterialCatalog,
   actions: StagingAction[],
   errors: string[],
-  state: RunState
+  state: RunState,
+  floorZ: number
 ): Promise<ToolResultContent> {
   console.log(`[staging] ${name}(${JSON.stringify(input)})`);
   try {
@@ -225,7 +226,16 @@ async function callTool(
         const original = objectsByName.get(input.object_name);
         if (!original) return `ERROR: unknown object_name ${input.object_name} (not in room inspection)`;
 
-        const position = input.position ?? original.position;
+        // original.position's Z is that scanned object's own center (see /inspect,
+        // which reads matrix_world.translation) - reusing it directly as a new,
+        // usually differently-sized item's placement floated replacements roughly
+        // half their height above the real floor. X/Y (footprint location) are still
+        // fine to inherit; Z should come from the room's actual floor level instead.
+        const position: [number, number, number] = input.position ?? [
+          original.position[0],
+          original.position[1],
+          floorZ,
+        ];
         const rotation = input.rotation_z_degrees ?? original.rotation_z_degrees;
         const occupantNames = state.currentOccupants.get(input.object_name) ?? [input.object_name];
 
@@ -514,7 +524,8 @@ export async function runStaging(usdzUrl: string, serialized?: RoomPlanCapturedR
         materials,
         actions,
         errors,
-        state
+        state,
+        inspection.room.bounds_min[2]
       );
       toolResults.push({ type: "tool_result", tool_use_id: toolUse.id, content: output });
       if (toolUse.name === "finish_staging" && output === "Staging finished.") finished = true;
