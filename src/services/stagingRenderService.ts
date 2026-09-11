@@ -19,13 +19,20 @@ const PAYLOAD_URL_PATTERN = "**/internal/staging-render/payload";
 // it. Generous enough to absorb that one-time cost without masking a genuinely
 // hung render.
 const RENDER_TIMEOUT_MS = 60_000;
-// Wide enough for the 2-column top-down + perspective grid, each view still a
-// reasonable individual frame.
-const VIEWPORT = { width: 2000, height: 900 };
+// Sized per-view so a single-view request isn't stuck in a half-empty
+// 2-column frame sized for two.
+const VIEWPORT_HEIGHT = 900;
+const VIEWPORT_WIDTH_PER_VIEW = 1000;
 
 export interface RenderPayload {
   scanData: RoomPlanCapturedRoom;
   actions: StagingAction[];
+  /** Which of stagingCameraViews.ts's named views to actually mount and
+   * screenshot - defaults to every view when omitted. Requesting only what's
+   * needed (e.g. just "top-down" for Claude's in-loop checks) skips mounting
+   * and rendering the Canvas(es) nobody's going to look at, not just the image
+   * tokens sent afterward. */
+  views?: string[];
 }
 
 export interface RenderedView {
@@ -46,12 +53,16 @@ export class StagingRenderSession {
     return this.browser;
   }
 
-  /** One screenshot per rendered view (today: a top-down plan view + an eye-level
-   * perspective view - see stagingCameraViews.ts on the frontend). Cropping to
-   * each view is just Playwright's per-element screenshot, no manual pixel math. */
+  /** One screenshot per requested view (see stagingCameraViews.ts on the
+   * frontend for the named views available - today "top-down" and
+   * "perspective"). Cropping to each view is just Playwright's per-element
+   * screenshot, no manual pixel math. */
   async renderPreview(payload: RenderPayload): Promise<RenderedView[]> {
     const browser = await this.ensureBrowser();
-    const page: Page = await browser.newPage({ viewport: VIEWPORT });
+    const viewCount = payload.views?.length ?? 2;
+    const page: Page = await browser.newPage({
+      viewport: { width: VIEWPORT_WIDTH_PER_VIEW * viewCount, height: VIEWPORT_HEIGHT },
+    });
     try {
       await page.route(PAYLOAD_URL_PATTERN, (route) =>
         route.fulfill({ contentType: "application/json", body: JSON.stringify(payload) })

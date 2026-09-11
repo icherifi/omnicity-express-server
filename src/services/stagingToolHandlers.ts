@@ -297,23 +297,20 @@ export function handleSetFloorMaterial(input: any, ctx: StagingContext): ToolRes
   return `Floor material set to ${material.name}.`;
 }
 
-/** Lightweight, ad hoc "just show me a picture" check - two camera views, no
- * scoring. review_layout is the heavier, gating tool for a real finishing pass. */
+/** Lightweight, ad hoc "just show me a picture" check - a single top-down
+ * plan view, no scoring. That one view is enough to judge spacing/overlaps/
+ * traffic flow, which is what this ad hoc check is for - review_layout is the
+ * heavier, gating tool for a real finishing pass. */
 export async function handleRenderPreview(ctx: StagingContext): Promise<ToolResultContent> {
   const budgetError = checkRenderBudget(ctx, "render_preview");
   if (budgetError) return budgetError;
   ctx.state.renderCallCount++;
 
-  const views = await ctx.renderSession.renderPreview({ scanData: ctx.serialized, actions: ctx.actions });
-  const content: Array<Anthropic.TextBlockParam | Anthropic.ImageBlockParam> = [];
-  for (const view of views) {
-    content.push({
-      type: "text",
-      text: view.key === "top-down" ? "Top-down plan view:" : "Eye-level view:",
-    });
-    content.push({ type: "image", source: { type: "base64", media_type: "image/png", data: view.buffer.toString("base64") } });
-  }
-  return content;
+  const [view] = await ctx.renderSession.renderPreview({ scanData: ctx.serialized, actions: ctx.actions, views: ["top-down"] });
+  return [
+    { type: "text", text: "Top-down plan view:" },
+    { type: "image", source: { type: "base64", media_type: "image/png", data: view.buffer.toString("base64") } },
+  ];
 }
 
 function scoredItemsFrom(ctx: StagingContext): ScoredItem[] {
@@ -329,9 +326,12 @@ function scoredItemsFrom(ctx: StagingContext): ScoredItem[] {
 /** The heavier, gating finishing-pass tool: re-validates every current
  * placement against the FULL hard-constraint battery (a defensive re-check,
  * since adjust_placement never cascades a re-solve to items placed relative to
- * whatever it moved), computes soft scores, and renders both camera views -
- * everything Claude needs for a single "is this room actually done" judgment in
- * one tool call. */
+ * whatever it moved), computes soft scores, and renders the top-down plan view
+ * - everything Claude needs for a single "is this room actually done" judgment
+ * in one tool call. Only the top-down view: it's the one that actually shows
+ * spacing/overlaps/traffic flow, which is what the hard constraints and scores
+ * above it can't fully convey as plain numbers; style/realism is judged on the
+ * final client-facing render instead, not on every in-loop check. */
 export async function handleReviewLayout(ctx: StagingContext): Promise<ToolResultContent> {
   const budgetError = checkRenderBudget(ctx, "review_layout");
   if (budgetError) return budgetError;
@@ -355,16 +355,12 @@ export async function handleReviewLayout(ctx: StagingContext): Promise<ToolResul
   }
   reportLines.push("", `Scores (informational, never blocking): ${JSON.stringify(scores)}`, critique);
 
-  const views = await ctx.renderSession.renderPreview({ scanData: ctx.serialized, actions: ctx.actions });
-  const content: Array<Anthropic.TextBlockParam | Anthropic.ImageBlockParam> = [{ type: "text", text: reportLines.join("\n") }];
-  for (const view of views) {
-    content.push({
-      type: "text",
-      text: view.key === "top-down" ? "Top-down plan view — check spacing, overlaps, clearances, traffic flow:" : "Eye-level view — check style, colors, realism:",
-    });
-    content.push({ type: "image", source: { type: "base64", media_type: "image/png", data: view.buffer.toString("base64") } });
-  }
-  return content;
+  const [view] = await ctx.renderSession.renderPreview({ scanData: ctx.serialized, actions: ctx.actions, views: ["top-down"] });
+  return [
+    { type: "text", text: reportLines.join("\n") },
+    { type: "text", text: "Top-down plan view — check spacing, overlaps, clearances, traffic flow:" },
+    { type: "image", source: { type: "base64", media_type: "image/png", data: view.buffer.toString("base64") } },
+  ];
 }
 
 export function handleFinishStaging(ctx: StagingContext): ToolResultContent {

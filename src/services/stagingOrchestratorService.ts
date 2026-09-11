@@ -202,13 +202,13 @@ function buildTools(materials: MaterialCatalog): Anthropic.Tool[] {
     {
       name: "render_preview",
       description:
-        "Quick ad hoc look at the room as it currently looks, from a top-down view and an eye-level view - no scoring, just pixels. SHARES A BUDGET OF 5 TOTAL CALLS WITH review_layout FOR THE WHOLE ROOM - don't call this after every single placement; place many items first, check once. Use review_layout (not this) before finish_staging.",
+        "Quick ad hoc look at the room as it currently looks, a single top-down plan view - no scoring, just pixels. SHARES A BUDGET OF 5 TOTAL CALLS WITH review_layout FOR THE WHOLE ROOM - don't call this after every single placement; place many items first, check once. Use review_layout (not this) before finish_staging.",
       input_schema: { type: "object", properties: {} },
     },
     {
       name: "review_layout",
       description:
-        "The real finishing-pass check: re-validates every current placement against hard constraints (wall/furniture collisions, door/window clearance, the real floor shape), computes quality scores (circulation, fill, focal-point orientation, furniture-to-room scale), and renders both camera views - everything needed to judge whether the room is actually done. Required, with zero remaining hard-constraint violations on its LATEST call, before finish_staging. Call it again after fixing anything it flags. SHARES THE SAME 5-CALL BUDGET as render_preview - the last remaining call in that budget is always reserved for this tool, never render_preview.",
+        "The real finishing-pass check: re-validates every current placement against hard constraints (wall/furniture collisions, door/window clearance, the real floor shape), computes quality scores (circulation, fill, focal-point orientation, furniture-to-room scale), and renders a top-down plan view - everything needed to judge whether the room is actually done. Required, with zero remaining hard-constraint violations on its LATEST call, before finish_staging. Call it again after fixing anything it flags. SHARES THE SAME 5-CALL BUDGET as render_preview - the last remaining call in that budget is always reserved for this tool, never render_preview.",
       input_schema: { type: "object", properties: {} },
     },
     {
@@ -444,9 +444,10 @@ export async function runStaging(serialized: RoomPlanCapturedRoom): Promise<RunS
 
     // Render once more unconditionally at the end, in case the last render/review
     // during the loop wasn't Claude's actual last action. The persisted preview is
-    // always the eye-level view, never the top-down plan view.
-    const finalViews = await renderSession.renderPreview({ scanData: serialized, actions });
-    const previewBuffer = finalViews.find((v) => v.key === "perspective")?.buffer ?? finalViews[0].buffer;
+    // always the eye-level view, never the top-down plan view Claude uses in-loop -
+    // a real customer looking at the result wants a photo-like shot, not a floor plan.
+    const [finalView] = await renderSession.renderPreview({ scanData: serialized, actions, views: ["perspective"] });
+    const previewBuffer = finalView.buffer;
 
     const notesBlock = messages
       .flatMap((m) => (Array.isArray(m.content) ? m.content : []))
