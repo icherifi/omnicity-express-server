@@ -38,7 +38,7 @@ check("empty room has good circulation (nothing to block it)", emptyResult.score
 // --- a plausibly furnished room via the real solver -------------------------
 console.log("\n=== solver-furnished room ===");
 const fakeSlots = new Map<string, ResolvedEntity>();
-const lookup: EntityLookup = { resolveFurniture: (id) => fakeSlots.get(id) ?? null };
+const lookup: EntityLookup = { resolveFurniture: (id) => fakeSlots.get(id) ?? null, listAllPlaced: () => [...fakeSlots.values()] };
 const openings = [...geometry.doors, ...geometry.windows];
 const wideWalls = geometry.walls.filter((w) => !openings.some((o) => o.parentWallIdentifier === w.identifier) && w.widthM > 2);
 

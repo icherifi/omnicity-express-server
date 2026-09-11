@@ -28,7 +28,7 @@ const geometry: RoomGeometry = buildRoomGeometry(serialized, inspection.room);
 const floorY = inspection.room.bounds_min[1];
 
 const fakeSlots = new Map<string, ResolvedEntity>();
-const lookup: EntityLookup = { resolveFurniture: (id) => fakeSlots.get(id) ?? null };
+const lookup: EntityLookup = { resolveFurniture: (id) => fakeSlots.get(id) ?? null, listAllPlaced: () => [...fakeSlots.values()] };
 
 function boxFor(widthM: number, heightM: number, depthM: number): LocalBoundingBox {
   return { min: [-widthM / 2, -heightM / 2, -depthM / 2], max: [widthM / 2, heightM / 2, depthM / 2] };

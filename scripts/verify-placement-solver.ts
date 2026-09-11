@@ -30,6 +30,7 @@ const floorY = inspection.room.bounds_min[1];
 const fakeSlots = new Map<string, ResolvedEntity>();
 const lookup: EntityLookup = {
   resolveFurniture: (id) => fakeSlots.get(id) ?? null,
+  listAllPlaced: () => [...fakeSlots.values()],
 };
 
 const SOFA = { widthM: 1.6, heightM: 1.0, depthM: 0.8 };
@@ -64,6 +65,24 @@ if (cleanWall) {
     check("facing points away from the wall (stepping forward increases distance)", distAfter > distBefore);
 
     fakeSlots.set("sofa_1", { position: result.position, rotationYDegrees: result.rotationYDegrees, widthM: SOFA.widthM, depthM: SOFA.depthM });
+
+    // --- furniture-aware free-span (the actual fix) ---------------------------
+    console.log("\n=== against_wall avoids already-placed furniture ===");
+    const secondIntent: PlacementIntent = { anchor: { kind: "against_wall", wall_id: cleanWall.identifier } };
+    const secondResult = resolveIntent(secondIntent, { widthM: 0.6, heightM: 0.9, depthM: 0.5 }, floorY, geometry, lookup);
+    console.log("  second item (default centering, same wall):", secondResult);
+    check("a second default-centered item on the same occupied wall still resolves", secondResult.ok);
+    if (secondResult.ok) {
+      const dx2 = secondResult.position[0] - result.position[0];
+      const dz2 = secondResult.position[2] - result.position[2];
+      const sep = Math.hypot(dx2, dz2);
+      const minSeparation = SOFA.widthM / 2 + 0.6 / 2; // half-widths shouldn't overlap
+      check(
+        "it lands clear of the first item instead of on top of it (the actual bug this fixes)",
+        sep >= minSeparation - 0.05,
+        `separation=${sep.toFixed(3)}m, need>=${minSeparation.toFixed(3)}m`
+      );
+    }
   }
 }
 

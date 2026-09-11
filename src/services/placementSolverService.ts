@@ -36,6 +36,15 @@ export interface EntityLookup {
    * windows are looked up directly on RoomGeometry instead (they always exist,
    * never need "not yet placed" handling). */
   resolveFurniture(id: string): ResolvedEntity | null;
+  /** Every currently-occupied slot (original scan objects included) - lets
+   * against_wall avoid aiming at a spot that's geometrically clear of doors/
+   * windows but already has furniture sitting there. Without this, the
+   * "center of the largest free span" default only avoided doors/windows and
+   * routinely aimed straight at an untouched neighboring object in a
+   * furnished room, forcing Claude into a manual offset-guessing retry loop
+   * (confirmed directly: one item took 11 attempts before landing on a truly
+   * free spot). */
+  listAllPlaced(): ResolvedEntity[];
 }
 
 export type SolverErrorCode =
@@ -85,11 +94,17 @@ function subtractIntervals(base: Interval, cuts: Interval[]): Interval[] {
   return remaining;
 }
 
+/** "Near enough to this wall to count as an obstruction on it" - furniture
+ * further than this from the wall's plane doesn't block a NEW item from
+ * sitting flush against that same wall. */
+const FURNITURE_WALL_PROXIMITY_M = 1.0;
+
 function resolveAgainstWall(
   anchor: Extract<PlacementAnchor, { kind: "against_wall" }>,
   itemWidthM: number,
   itemDepthM: number,
-  geometry: RoomGeometry
+  geometry: RoomGeometry,
+  lookup: EntityLookup
 ): { position: Vec2; rotationYDegrees: number; inward: Vec2 } | SolverFailure {
   const wall = geometry.walls.find((w) => w.identifier === anchor.wall_id);
   if (!wall) return { ok: false, error: "unknown_wall", message: `No wall with id ${anchor.wall_id}` };
@@ -106,10 +121,28 @@ function resolveAgainstWall(
   const { right } = axesOf(wall.rotationYDegrees);
   const halfWallWidth = wall.widthM / 2;
   const openings = [...geometry.doors, ...geometry.windows].filter((o) => o.parentWallIdentifier === wall.identifier);
-  const cuts: Interval[] = openings.map((o) => {
+  const openingCuts: Interval[] = openings.map((o) => {
     const t = dot(sub(xz(o.position), xz(wall.position)), right);
     return { min: t - o.widthM / 2, max: t + o.widthM / 2 };
   });
+
+  // Also avoid already-placed furniture sitting near this wall - without this,
+  // "center of the largest free span" only dodges doors/windows and routinely
+  // aims straight at an untouched neighboring object in a furnished room,
+  // forcing a manual offset-guessing retry loop (confirmed directly: one item
+  // took 11 attempts before landing on a truly free spot).
+  const furnitureCuts: Interval[] = lookup
+    .listAllPlaced()
+    .filter((item) => {
+      const perpDist = Math.abs(dot(sub(xz(item.position), xz(wall.position)), inward));
+      return perpDist <= FURNITURE_WALL_PROXIMITY_M + item.depthM / 2;
+    })
+    .map((item) => {
+      const t = dot(sub(xz(item.position), xz(wall.position)), right);
+      return { min: t - item.widthM / 2, max: t + item.widthM / 2 };
+    });
+
+  const cuts: Interval[] = [...openingCuts, ...furnitureCuts];
 
   const freeSpans = subtractIntervals({ min: -halfWallWidth, max: halfWallWidth }, cuts).filter(
     (span) => span.max - span.min >= itemWidthM
@@ -299,7 +332,7 @@ export function resolveIntent(
 
   switch (intent.anchor.kind) {
     case "against_wall":
-      anchorResult = resolveAgainstWall(intent.anchor, widthM, depthM, geometry);
+      anchorResult = resolveAgainstWall(intent.anchor, widthM, depthM, geometry, lookup);
       break;
     case "in_corner":
       anchorResult = resolveInCorner(intent.anchor, widthM, depthM, geometry);

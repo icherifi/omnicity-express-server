@@ -31,17 +31,23 @@ function otherFootprints(state: RunState, excludeKey: string | null): OtherFootp
   return result;
 }
 
+function toResolvedEntity(item: PlacedItem) {
+  return {
+    position: item.position,
+    rotationYDegrees: item.rotationYDegrees,
+    widthM: item.localBox.max[0] - item.localBox.min[0],
+    depthM: item.localBox.max[2] - item.localBox.min[2],
+  };
+}
+
 function entityLookupFor(state: RunState): EntityLookup {
   return {
     resolveFurniture(id) {
       const item = state.slots.get(id);
-      if (!item) return null;
-      return {
-        position: item.position,
-        rotationYDegrees: item.rotationYDegrees,
-        widthM: item.localBox.max[0] - item.localBox.min[0],
-        depthM: item.localBox.max[2] - item.localBox.min[2],
-      };
+      return item ? toResolvedEntity(item) : null;
+    },
+    listAllPlaced() {
+      return [...state.slots.values()].map(toResolvedEntity);
     },
   };
 }
@@ -58,6 +64,24 @@ function isNameTaken(name: string, ctx: StagingContext): boolean {
 
 function violationsText(violations: HardConstraintViolation[]): string {
   return violations.map((v) => `${v.constraint} (${v.detail})`).join("; ");
+}
+
+/** Shared budget for render_preview + review_layout combined - each is a real
+ * headless-browser screenshot, expensive in both time and tokens, and Claude
+ * doesn't need to look after every single placement. The last slot is
+ * reserved for review_layout specifically, so a run that spends its earlier
+ * slots on ad hoc render_preview checks always still has one guaranteed shot
+ * at the mandatory final gate check. */
+const MAX_RENDER_CALLS = 5;
+
+function checkRenderBudget(ctx: StagingContext, toolName: "render_preview" | "review_layout"): string | null {
+  if (ctx.state.renderCallCount >= MAX_RENDER_CALLS) {
+    return `ERROR: render/review budget exhausted (${MAX_RENDER_CALLS} used this run, shared between render_preview and review_layout) - no more renders available. Finish with what you have.`;
+  }
+  if (toolName === "render_preview" && ctx.state.renderCallCount === MAX_RENDER_CALLS - 1) {
+    return `ERROR: only 1 render left in the shared budget, and it's reserved for review_layout (the mandatory final check) - call review_layout instead of render_preview.`;
+  }
+  return null;
 }
 
 interface ResolvedPlacement {
@@ -276,6 +300,10 @@ export function handleSetFloorMaterial(input: any, ctx: StagingContext): ToolRes
 /** Lightweight, ad hoc "just show me a picture" check - two camera views, no
  * scoring. review_layout is the heavier, gating tool for a real finishing pass. */
 export async function handleRenderPreview(ctx: StagingContext): Promise<ToolResultContent> {
+  const budgetError = checkRenderBudget(ctx, "render_preview");
+  if (budgetError) return budgetError;
+  ctx.state.renderCallCount++;
+
   const views = await ctx.renderSession.renderPreview({ scanData: ctx.serialized, actions: ctx.actions });
   const content: Array<Anthropic.TextBlockParam | Anthropic.ImageBlockParam> = [];
   for (const view of views) {
@@ -305,6 +333,10 @@ function scoredItemsFrom(ctx: StagingContext): ScoredItem[] {
  * everything Claude needs for a single "is this room actually done" judgment in
  * one tool call. */
 export async function handleReviewLayout(ctx: StagingContext): Promise<ToolResultContent> {
+  const budgetError = checkRenderBudget(ctx, "review_layout");
+  if (budgetError) return budgetError;
+  ctx.state.renderCallCount++;
+
   const footprintItems = [...ctx.state.slots.entries()].map(([key, item]) => ({ key, ...footprintOf(item) }));
   const violationsByItem = validateAllPlacements(footprintItems, ctx.geometry);
   ctx.state.lastReviewClean = violationsByItem.length === 0;

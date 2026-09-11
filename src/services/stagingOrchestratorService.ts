@@ -19,14 +19,18 @@ import {
 import { MaterialCatalog, RoomPlanCapturedRoom, SceneInspection, StagingSummary } from "../types/staging.types";
 
 const DEFAULT_MODEL = process.env.ANTHROPIC_STAGING_MODEL || "claude-sonnet-5";
-// Raised from the pre-Phase-3 value of 25: intent-based placement adds retry
-// rounds for unresolved dependencies/rejected placements, and the new
-// review-then-fix critique loop (review_layout -> adjust -> review_layout again)
-// can itself take several rounds. Empirically-motivated starting point (search+
-// place per item x ~8-10 items, some retries, wall/floor, a few critique
-// iterations comfortably fits under 35), not a hard requirement - revisit if
-// real runs prove it needs to move again.
-const MAX_TOOL_ROUNDS = 35;
+// Brought back down from an initial 35: a real run against the full multi-room
+// fixture burned ~30 rounds retrying ONE or TWO items one-at-a-time (a solver
+// gap - against_wall's default centering didn't avoid already-placed furniture,
+// so the "best" spot was often already occupied, forcing manual offset-
+// guessing) and never got to most of the apartment. That gap is now fixed
+// (see placementSolverService.ts's furniture-aware free-span calculation) and
+// the system prompt now pushes Claude to batch independent placements in one
+// round instead of one call at a time - both should sharply cut real round
+// usage for the same amount of work. 20 is a deliberately tighter budget than
+// 35 to keep test iterations fast/cheap while that holds; revisit upward if a
+// real multi-room run still can't finish in it.
+const MAX_TOOL_ROUNDS = 20;
 // With ~2 rounds left and the room still not passing review_layout clean, nudge
 // Claude to converge immediately rather than silently exhausting the budget.
 const CONVERGENCE_WARNING_ROUNDS_REMAINING = 2;
@@ -38,12 +42,15 @@ function anthropicClient() {
   // ever reached the catch block in staging.ts to mark it "error". Bound it explicitly
   // rather than trust an unbounded default (10 minutes).
   //
-  // The SDK retries a timed-out request by default (maxRetries: 2), so the real
-  // worst case is timeout * (1 + maxRetries) - with the default retry count that's
-  // 6 minutes, not 120s, which is exactly how long a real stalled run took to
-  // (correctly) surface as an error. Capping retries at 1 keeps some resilience to a
-  // one-off network blip without compounding the wait past ~4 minutes.
-  return new Anthropic({ apiKey, timeout: 120_000, maxRetries: 1 });
+  // Raised from 120s: the system prompt now deliberately pushes Claude to batch many
+  // independent tool calls into one turn (searching/placing several items at once)
+  // to cut round count - which means any one turn's generation can legitimately take
+  // longer than a single-tool-call turn used to. Confirmed directly: a real run's
+  // very next round (synthesizing choices for ~10 batched search results into
+  // several replace_furniture calls) timed out at 120s. 240s per attempt, still
+  // capped at 1 retry (worst case ~8 minutes total) rather than trusting an
+  // unbounded default.
+  return new Anthropic({ apiKey, timeout: 240_000, maxRetries: 1 });
 }
 
 const PLACEMENT_ANCHOR_SCHEMA = {
@@ -195,13 +202,13 @@ function buildTools(materials: MaterialCatalog): Anthropic.Tool[] {
     {
       name: "render_preview",
       description:
-        "Quick ad hoc look at the room as it currently looks, from a top-down view and an eye-level view - no scoring, just pixels. Use this anytime for a fast visual check while you work. Use review_layout (not this) before finish_staging.",
+        "Quick ad hoc look at the room as it currently looks, from a top-down view and an eye-level view - no scoring, just pixels. SHARES A BUDGET OF 5 TOTAL CALLS WITH review_layout FOR THE WHOLE ROOM - don't call this after every single placement; place many items first, check once. Use review_layout (not this) before finish_staging.",
       input_schema: { type: "object", properties: {} },
     },
     {
       name: "review_layout",
       description:
-        "The real finishing-pass check: re-validates every current placement against hard constraints (wall/furniture collisions, door/window clearance, the real floor shape), computes quality scores (circulation, fill, focal-point orientation, furniture-to-room scale), and renders both camera views - everything needed to judge whether the room is actually done. Required, with zero remaining hard-constraint violations on its LATEST call, before finish_staging. Call it again after fixing anything it flags.",
+        "The real finishing-pass check: re-validates every current placement against hard constraints (wall/furniture collisions, door/window clearance, the real floor shape), computes quality scores (circulation, fill, focal-point orientation, furniture-to-room scale), and renders both camera views - everything needed to judge whether the room is actually done. Required, with zero remaining hard-constraint violations on its LATEST call, before finish_staging. Call it again after fixing anything it flags. SHARES THE SAME 5-CALL BUDGET as render_preview - the last remaining call in that budget is always reserved for this tool, never render_preview.",
       input_schema: { type: "object", properties: {} },
     },
     {
@@ -238,6 +245,11 @@ Contrairement à une position libre en coordonnées, tu places chaque meuble via
 
 Trois étapes sont OBLIGATOIRES et vérifiées automatiquement — finish_staging est refusé tant qu'elles n'ont pas toutes eu lieu : set_wall_color, set_floor_material, et un review_layout dont le DERNIER appel ne signale plus aucune violation de contrainte dure.
 
+Contraintes de budget IMPORTANTES — lis-les avant de commencer :
+- Tu disposes d'environ ${MAX_TOOL_ROUNDS} tours d'outils pour TOUTE la pièce (pas par meuble). Un tour peut contenir PLUSIEURS appels d'outils indépendants à la fois — utilise cette possibilité systématiquement : dès que plusieurs meubles n'ont AUCUNE dépendance entre eux (pas de relative_to les uns envers les autres), lance leurs replace_furniture/place_furniture dans le MÊME tour plutôt qu'un par un. Traiter les meubles un par un et attendre le résultat de chacun avant de passer au suivant est ce qui épuise le budget avant d'avoir couvert toute la pièce.
+- render_preview et review_layout partagent un budget total de 5 appels pour toute la pièce (pas par meuble) — n'appelle PAS ces outils après chaque placement individuel. Place un maximum de meubles d'abord (idéalement pièce par pièce), puis vérifie visuellement. Garde toujours au moins 1 appel en réserve pour le review_layout final obligatoire.
+- Si un meuble résiste après 2-3 tentatives infructueuses, laisse-le de côté et passe aux autres meubles/pièces — tu pourras y revenir avec adjust_placement/replace_furniture s'il te reste du budget, mais ne bloque jamais toute la pièce sur un seul objet difficile.
+
 Règles :
 - Pour chaque meuble déjà détecté dans le scan, décide de le REMPLACER par un meuble IKEA de type/dimensions proches (replace_furniture), sauf s'il n'a pas d'équivalent pertinent (ex. baignoire, toilettes, four, plaques, évier, réfrigérateur : ce sont des équipements fixes, pas du mobilier — ne cherche pas à les remplacer, ils resteront visibles tels quels dans le rendu).
 - IMPORTANT : fournis presque toujours un intent explicite à replace_furniture, ne compte pas sur l'héritage automatique de la position d'origine — dans une pièce meublée, un article de remplacement (forcément d'une taille différente de l'original) entre très souvent en collision avec un objet VOISIN pas encore remplacé, puisque les meubles d'origine sont scannés serrés les uns contre les autres. Si un appel échoue pour cette raison, réessaie tout de suite avec un intent (souvent relative_to ce même voisin, ou against_wall sur le même mur) plutôt que de passer au meuble suivant.
@@ -245,7 +257,7 @@ Règles :
 - Si une intention échoue (mur inconnu, pas assez de place, cible relative_to pas encore placée), le message d'erreur explique pourquoi — essaie une autre ancre, un meuble plus petit, ou place d'abord la cible en question. Ne réessaie jamais avec des coordonnées brutes, cette option n'existe plus.
 - AJOUTE aussi des meubles IKEA (place_furniture) dans toute pièce qui, après tes remplacements, resterait sans aucun mobilier — une pièce vide ne donne pas envie d'acheter.
 - OBLIGATOIRE : choisis une couleur de mur (set_wall_color) et un matériau de sol (set_floor_material) parmi la liste fournie ci-dessous. Utilise all_walls: true pour peindre tous les murs d'un coup (recommandé), sauf mur d'accent volontaire — un mur non peint reste dans un blanc cassé neutre par défaut.
-- Utilise render_preview à tout moment pour un simple coup d'œil rapide pendant que tu travailles. Utilise review_layout (plus complet : contraintes dures + scores + rendu) avant de conclure, et corrige (adjust_placement/replace_furniture) tout ce qu'il signale, puis relance review_layout jusqu'à ce qu'il soit propre.
+- Utilise review_layout (contraintes dures + scores + rendu) avant de conclure, et corrige (adjust_placement/replace_furniture) tout ce qu'il signale, puis relance-le jusqu'à ce qu'il soit propre — en respectant le budget de 5 appels partagé avec render_preview vu plus haut.
 - adjust_placement corrige un meuble déjà placé (ex. une orientation qui a utilisé un repli par défaut parce que sa cible n'existait pas encore au moment du placement) sans changer l'article choisi.
 - Quand les trois étapes obligatoires sont faites et que la pièce est prête, appelle finish_staging avec un résumé court des choix faits.
 
@@ -323,6 +335,7 @@ export async function runStaging(serialized: RoomPlanCapturedRoom): Promise<RunS
     hasSetWallColor: false,
     hasSetFloorMaterial: false,
     lastReviewClean: false,
+    renderCallCount: 0,
     slots,
   };
 
@@ -363,7 +376,12 @@ export async function runStaging(serialized: RoomPlanCapturedRoom): Promise<RunS
     for (let round = 0; round < MAX_TOOL_ROUNDS && !finished; round++) {
       const response = await anthropic.messages.create({
         model: DEFAULT_MODEL,
-        max_tokens: 8192,
+        // 8192 was too tight: adaptive thinking (on by default) plus a real
+        // tool_use call (a PlacementIntent's nested schema is verbose) can
+        // exceed it before Claude ever finishes a turn - confirmed directly by
+        // a real run where round 1 alone hit exactly 8192 output tokens and
+        // the loop bailed with zero completed tool calls, having done nothing.
+        max_tokens: 16000,
         system,
         tools,
         messages,

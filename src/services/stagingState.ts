@@ -35,6 +35,11 @@ export interface RunState {
    * "render_preview was called at least once"). render_preview alone no longer
    * satisfies it. */
   lastReviewClean: boolean;
+  /** Every render_preview + review_layout call counts against one shared
+   * budget (see MAX_RENDER_CALLS in stagingToolHandlers.ts) - each is a real
+   * headless-browser screenshot (~30-45s, plus image tokens), and nothing
+   * requires checking in after every single placement. */
+  renderCallCount: number;
   /**
    * What CURRENTLY occupies each slot, keyed by the original scanned object's
    * object_name for replace_furniture targets, or Claude's own instance_name for
