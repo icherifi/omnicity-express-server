@@ -9,7 +9,17 @@
 
 import fs from "fs";
 import path from "path";
-import { FloorMaterial, MaterialCatalog, WallMaterial } from "../types/staging.types";
+import { FloorMaterial, MaterialCatalog, StagingAction, WallMaterial } from "../types/staging.types";
+
+// Neutral, safe defaults from the curated catalog - avoids the 2 explicit
+// "accent" wall colors and the higher-contrast floor/wall options that read
+// more like a styled choice than a safe default. No per-archetype variation:
+// a wall sits at the boundary between two zones (roomZoningService.ts has no
+// notion of "which wall belongs to which zone" - that would need a whole new
+// wall-ownership algorithm for a purely cosmetic feature), so one global pair
+// for the whole run is the right amount of complexity here.
+const DEFAULT_WALL_MATERIAL_ID = "soft_greige";
+const DEFAULT_FLOOR_MATERIAL_ID = "oak_light";
 
 // process.cwd()-relative, not __dirname-relative: __dirname would point into
 // dist/ under a compiled build, and this JSON file (unlike .ts sources) isn't
@@ -45,4 +55,28 @@ export function getMaterials(): MaterialCatalog {
   }));
 
   return { floors, walls: raw.walls };
+}
+
+/** Wall color + floor material are no longer a Claude decision - applied
+ * programmatically once, at the start of the run, so even the in-loop
+ * screenshots already show the correct treatment. Throws if the catalog
+ * doesn't contain the hardcoded defaults (a manifest.json edit removing them
+ * should fail loudly at startup, not silently skip materials for every run). */
+export function buildDefaultMaterialActions(materials: MaterialCatalog): StagingAction[] {
+  const wall = materials.walls.find((w) => w.material_id === DEFAULT_WALL_MATERIAL_ID);
+  const floor = materials.floors.find((f) => f.material_id === DEFAULT_FLOOR_MATERIAL_ID);
+  if (!wall) throw new Error(`Default wall material_id '${DEFAULT_WALL_MATERIAL_ID}' not found in the materials catalog.`);
+  if (!floor) throw new Error(`Default floor material_id '${DEFAULT_FLOOR_MATERIAL_ID}' not found in the materials catalog.`);
+
+  return [
+    { type: "wall_color", wall_object_names: "all", material_id: wall.material_id, hex_color: wall.hex_color },
+    {
+      type: "floor_material",
+      material_id: floor.material_id,
+      diffuse_path: floor.diffuse_path,
+      normal_path: floor.normal_path,
+      roughness_path: floor.roughness_path,
+      tile_size_cm: floor.tile_size_cm,
+    },
+  ];
 }

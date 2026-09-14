@@ -272,6 +272,21 @@ export interface OpeningDescriptor {
  * implementation-detail fields (wall collision matrices) that have no business in
  * an LLM prompt, decomposed into a shape the solver can use directly instead of
  * re-parsing raw RoomPlan transforms itself. */
+/** A functional room-shaped region of the floor, produced by roomZoningService.ts's
+ * classifyZones() - NOT one per RoomPlan `sections[]` entry (those are sparse,
+ * single-point labels; see roomZoningService.ts's own header comment for why a
+ * heavier Voronoi-plus-refinement approach is needed instead of trusting them
+ * directly). */
+export interface Zone {
+  id: string;
+  /** Normalized to a closed set: "bedroom" | "kitchen" | "bathroom" | "living" | "generic". */
+  label: string;
+  centroid: Vec2;
+  area_m2: number;
+  bounds_min: Vec2;
+  bounds_max: Vec2;
+}
+
 export interface RoomGeometry {
   walls: WallDescriptor[];
   doors: OpeningDescriptor[];
@@ -282,6 +297,10 @@ export interface RoomGeometry {
   floorPolygon: [number, number][] | null;
   boundsMin: [number, number, number];
   boundsMax: [number, number, number];
+  /** Populated by classifyZones() right after buildRoomGeometry() runs (zoning
+   * needs floorPolygon as input, so it can't happen inside this constructor
+   * itself) - empty until then. */
+  zones: Zone[];
 }
 
 export function buildRoomGeometry(serialized: RoomPlanCapturedRoom, room: RoomShellInfo): RoomGeometry {
@@ -314,6 +333,7 @@ export function buildRoomGeometry(serialized: RoomPlanCapturedRoom, room: RoomSh
     floorPolygon,
     boundsMin: room.bounds_min,
     boundsMax: room.bounds_max,
+    zones: [],
   };
 }
 

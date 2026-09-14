@@ -30,3 +30,6 @@ temp.js
 
 # Downloaded/cached IKEA product data + GLB models (src/services/ikeaService.ts)
 ikea_cache
+
+# Downloaded/cached local (non-IKEA) GLB models (src/services/localModelService.ts)
+local_model_cache

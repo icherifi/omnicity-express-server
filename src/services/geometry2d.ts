@@ -99,6 +99,15 @@ export function pointInPolygon(point: Vec2, polygon: Vec2[]): boolean {
   return inside;
 }
 
+/** Cheap, deliberately approximate quad-overlap test: true if either quad has a
+ * corner inside the other. Misses the rare case of two quads crossing through
+ * each other's edges with no corner inside either (a thin cross shape) - an
+ * accepted trade for a system that already treats these checks as one signal
+ * among several, not the only line of defense. */
+export function quadsLikelyOverlap(a: Vec2[], b: Vec2[]): boolean {
+  return a.some((p) => pointInPolygon(p, b)) || b.some((p) => pointInPolygon(p, a));
+}
+
 /** The 4 corners of a yaw-rotated rectangular footprint, in world XZ, walked in
  * perimeter order (front-right, back-right, back-left, front-left) - this list
  * doubles as a valid simple polygon for pointInPolygon, not just a bag of 4

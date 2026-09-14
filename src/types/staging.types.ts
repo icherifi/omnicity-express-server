@@ -66,9 +66,31 @@ export type PlacementAnchor =
   | {
       kind: "relative_to";
       target_id: string;
-      relation: "left_of" | "right_of" | "in_front_of" | "behind";
+      /** on_top_of: stacks on the target's own top surface (e.g. a TV on a media
+       * console) - the only relation that changes the item's height, not just
+       * its horizontal position. */
+      relation: "left_of" | "right_of" | "in_front_of" | "behind" | "on_top_of";
       gap_cm?: number;
       align?: "center" | "start" | "end";
+    }
+  | {
+      kind: "zone_center";
+      zone_id: string;
+      /** Splits the zone along its own longer bounding-box axis - half_a is the
+       * half closer to the whole floor's centroid, half_b the farther half.
+       * Omitted = the zone's plain centroid. See roomZoningService.ts's Zone. */
+      sub_region?: "half_a" | "half_b";
+    }
+  | {
+      /** Finds the wall the target is facing (steps forward from the target
+       * until leaving the floor polygon, then the nearest wall to that point)
+       * and positions this item against THAT wall, laterally aligned with the
+       * target, facing back toward it - e.g. a TV console on the wall a sofa
+       * faces, centered on the sofa. Deterministic: no wall_id for Claude to
+       * pick, unlike against_wall. */
+      kind: "facing_target_wall";
+      target_id: string;
+      gap_cm?: number;
     };
 
 export type FacingIntent =
@@ -103,15 +125,6 @@ export interface ValidationResult {
   position: [number, number, number];
   rotation_y_degrees: number;
   violations: HardConstraintViolation[];
-}
-
-export interface SoftScores {
-  circulation: number;
-  fill: number;
-  blocked_fraction: number;
-  focal_point: number | null;
-  scale: number;
-  overall: number;
 }
 
 export interface IkeaSearchResult {
@@ -157,26 +170,21 @@ export interface MaterialCatalog {
 export type StagingAction =
   | {
       type: "place";
-      /** Claude's own handle for this item, unique across the run - lets a later
-       * adjust_placement/relative_to intent reference it, and lets adjust_placement
-       * find+update this exact action in place instead of appending a duplicate. */
-      instance_name: string;
+      /** The manifest slot this fills (e.g. "zone_bedroom_1__wardrobe") - lets a
+       * later adjust_placement/relative_to intent reference it, and lets
+       * adjust_placement find+update this exact action in place instead of
+       * appending a duplicate. */
+      slot_id: string;
       item_no: string;
+      /** "local" for a non-IKEA model (see localModelService.ts) - tells the
+       * renderer which backend route to fetch the GLB from. Omitted/undefined
+       * means "ikea", the original and still most common case. */
+      model_source?: "ikea" | "local";
       position: [number, number, number];
       rotation_y_degrees: number;
-      /** The intention that resolved to this position/rotation, if placed via the
-       * intent-based tools - kept for audit/debugging (why did Claude put this
-       * here), never read back by the renderer. */
-      intent?: PlacementIntent;
-    }
-  | {
-      type: "replace";
-      object_name: string;
-      /** RoomPlan's own identifier for the object being replaced, when known — see scans.serialized. */
-      replaces_roomplan_identifier?: string;
-      item_no: string;
-      position?: [number, number, number];
-      rotation_y_degrees?: number;
+      /** The intention that resolved to this position/rotation - kept for
+       * audit/debugging (why did Claude put this here), never read back by the
+       * renderer. */
       intent?: PlacementIntent;
     }
   | { type: "wall_color"; wall_object_names: string[] | "all"; material_id: string; hex_color: string }
@@ -197,6 +205,11 @@ export interface StagingSummary {
   notes: string;
   preview_render_path: string | null;
   errors: string[];
+  /** RoomPlan identifiers of every original scanned object programmatically
+   * stripped before Claude ever saw the scan (see furnitureStrippingService.ts) -
+   * the renderer must suppress these exactly like it suppresses a replaced
+   * object, or every stripped item reappears as a generic gray box. */
+  stripped_roomplan_identifiers: string[];
 }
 
 export type StagingStatus = "none" | "pending" | "processing" | "done" | "error";

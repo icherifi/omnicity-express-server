@@ -11,10 +11,18 @@
 
 import { LocalBoundingBox, boxOverlapVolume, placedBoundingBox } from "./glbGeometryService";
 import { OpeningDescriptor, RoomGeometry, wallClipVolume, wallInwardDirection } from "./roomShellService";
-import { add, axesOf, dot, footprintCorners, length, pointInPolygon, sub, Vec2, xz } from "./geometry2d";
+import { add, axesOf, dot, footprintCorners, length, pointInPolygon, quadsLikelyOverlap, sub, Vec2, xz } from "./geometry2d";
 import { HardConstraintViolation, ValidationResult } from "../types/staging.types";
 
 const FURNITURE_OVERLAP_VOLUME_M3 = 0.01;
+/** Used ONLY between a pair that explicitly declared each other as an
+ * intentional overlap partner (allowedOverlapTargetId, set exclusively via a
+ * manifest slot's forced_relative_to, e.g. a dining chair tucked under its
+ * own table) - every other pair still uses the strict threshold above. Sized
+ * to cover that real case (≈0.06 m³, see roomManifests.ts's
+ * DINING_CHAIR_TUCK_GAP_CM) while staying well below a degenerate
+ * full-overlap bug (≈0.24 m³ for that same pair). */
+const RELAXED_FURNITURE_OVERLAP_VOLUME_M3 = 0.08;
 const WALL_OVERLAP_VOLUME_M3 = 0.01;
 const DOOR_CLEAR_DEPTH_MIN_M = 0.9;
 const DOOR_CLEAR_MARGIN_M = 0.1;
@@ -26,12 +34,24 @@ const DEFAULT_CORRECTIVE_PUSH_M = 0.1;
 const CORRECTIVE_NUDGE_MARGIN_M = 0.03;
 
 export interface Footprint {
+  /** Absent on the raw shape some callers use pre-placement (e.g.
+   * resolveAndValidate's candidate, not yet a stored slot) - present whenever
+   * this Footprint came from an already-placed item (see stagingToolHandlers.ts's
+   * footprintOf), which is what checkFurnitureOverlap needs to test the
+   * symmetric half of an allowedOverlapTargetId pair. */
+  key?: string;
   localBox: LocalBoundingBox;
   position: [number, number, number];
   rotationYDegrees: number;
   widthM: number;
   depthM: number;
   heightM: number;
+  /** This item is INTENTIONALLY allowed to overlap the item with this key
+   * beyond the normal strict threshold (see RELAXED_FURNITURE_OVERLAP_VOLUME_M3)
+   * - set only via a manifest slot's forced_relative_to, never by anything
+   * Claude controls, so it can't be used to paper over an unrelated real
+   * collision. */
+  allowedOverlapTargetId?: string;
 }
 
 export interface OtherFootprint {
@@ -39,6 +59,7 @@ export interface OtherFootprint {
   localBox: LocalBoundingBox;
   position: [number, number, number];
   rotationYDegrees: number;
+  allowedOverlapTargetId?: string;
 }
 
 interface ConstraintCheck {
@@ -70,9 +91,27 @@ function checkWallPenetration(item: Footprint, geometry: RoomGeometry): Constrai
 
 function checkFurnitureOverlap(item: Footprint, others: OtherFootprint[]): ConstraintCheck {
   const itemBox = placedBoundingBox(item.localBox, item.position, item.rotationYDegrees);
+  const itemFootprint = footprintCorners(xz(item.position), item.rotationYDegrees, item.localBox.max[0] - item.localBox.min[0], item.localBox.max[2] - item.localBox.min[2]);
   for (const other of others) {
     const otherBox = placedBoundingBox(other.localBox, other.position, other.rotationYDegrees);
-    if (boxOverlapVolume(itemBox, otherBox) > FURNITURE_OVERLAP_VOLUME_M3) {
+
+    // Two cheap pre-checks rule out a real collision before ever trusting the
+    // approximate world-axis-aligned AABB volume below:
+    // - Y ranges that don't overlap at all can't collide regardless of XZ.
+    // - The TRUE oriented XZ footprints not overlapping rules it out too - a
+    //   world-aligned AABB around a rotated wide/shallow rectangle spans much
+    //   more than the rectangle itself once it isn't aligned to a world axis,
+    //   which nearestWallRotation makes the norm rather than the exception.
+    //   Same corner-in-polygon primitive (not a full SAT) already used for
+    //   resolveInCorner/checkDoorClearance - an accepted tradeoff already,
+    //   not a new risk.
+    if (itemBox.max[1] <= otherBox.min[1] || otherBox.max[1] <= itemBox.min[1]) continue;
+    const otherFootprint = footprintCorners(xz(other.position), other.rotationYDegrees, other.localBox.max[0] - other.localBox.min[0], other.localBox.max[2] - other.localBox.min[2]);
+    if (!quadsLikelyOverlap(itemFootprint, otherFootprint)) continue;
+
+    const isDeclaredOverlapPair = item.allowedOverlapTargetId === other.key || (!!item.key && other.allowedOverlapTargetId === item.key);
+    const threshold = isDeclaredOverlapPair ? RELAXED_FURNITURE_OVERLAP_VOLUME_M3 : FURNITURE_OVERLAP_VOLUME_M3;
+    if (boxOverlapVolume(itemBox, otherBox) > threshold) {
       const away = sub(xz(item.position), xz(other.position));
       const dist = length(away);
       return {
@@ -91,9 +130,6 @@ function checkFurnitureOverlap(item: Footprint, others: OtherFootprint[]): Const
  * door clear-zone rectangle); the rare missed edge-crossing case degrades to "no
  * violation detected" rather than a false alarm, an acceptable trade for a system
  * that already treats these checks as one signal among several. */
-function quadsLikelyOverlap(a: Vec2[], b: Vec2[]): boolean {
-  return a.some((p) => pointInPolygon(p, b)) || b.some((p) => pointInPolygon(p, a));
-}
 
 function doorClearZone(door: OpeningDescriptor, geometry: RoomGeometry): Vec2[] | null {
   const wall = door.parentWallIdentifier ? geometry.walls.find((w) => w.identifier === door.parentWallIdentifier) : undefined;
@@ -248,17 +284,23 @@ export function validateAndMaybeCorrect(item: Footprint, others: OtherFootprint[
   };
 }
 
-/** Full-room defensive re-check (used by review_layout): every currently placed
- * item against every hard constraint, not just the one item a single
- * place/replace/adjust call touched - catches drift from an earlier
- * adjust_placement that moved something without cascading a re-solve to items
- * placed relative to it. */
+/** Full-room defensive re-check (used by review_layout): every currently
+ * placed item against every hard constraint, catching drift from an earlier
+ * adjust_placement that moved something without cascading a re-solve to
+ * items placed relative to it. `isFixed` items (never placed/moved by this
+ * pipeline) are only ever checked as a NEIGHBOR, never as the item under
+ * test - a pre-existing overlap between two fixed items (real scan noise)
+ * can never be corrected, so reporting it would permanently block
+ * finish_staging for no actionable reason. A real overlap between a fixed
+ * item and something Claude placed is still caught, via the placed item's
+ * own (symmetric) check. */
 export function validateAllPlacements(
-  items: Array<{ key: string } & Footprint>,
+  items: Array<{ key: string; isFixed?: boolean } & Footprint>,
   geometry: RoomGeometry
 ): Array<{ key: string; violations: HardConstraintViolation[] }> {
   const results: Array<{ key: string; violations: HardConstraintViolation[] }> = [];
   for (const item of items) {
+    if (item.isFixed) continue;
     const others: OtherFootprint[] = items.filter((o) => o.key !== item.key);
     const violations = runAll(item, others, geometry).map((v) => v.violation!);
     if (violations.length > 0) results.push({ key: item.key, violations });

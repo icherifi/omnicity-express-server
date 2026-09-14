@@ -33,6 +33,12 @@ export interface RenderPayload {
    * and rendering the Canvas(es) nobody's going to look at, not just the image
    * tokens sent afterward. */
   views?: string[];
+  /** RoomPlan identifiers of objects programmatically stripped before Claude
+   * ever saw the scan (see furnitureStrippingService.ts) - without this,
+   * Claude's own in-loop screenshots (and the final persisted preview) would
+   * show every stripped item as a generic gray box, stacked on its manifest
+   * replacement. */
+  strippedRoomplanIdentifiers?: string[];
 }
 
 export interface RenderedView {
