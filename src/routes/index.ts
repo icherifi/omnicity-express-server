@@ -1,6 +1,9 @@
 import { Router } from "express";
 import projectRoutes from "./project";
 import scanRoutes from "./scan";
+import stagingRoutes from "./staging";
+import ikeaRoutes from "./ikea";
+import localModelRoutes from "./localModels";
 import { getCredential } from "../handlers/log";
 import energyRoutes from "./energy/index";
 import dpeRoutes from "./dpe";
@@ -12,6 +15,9 @@ router.get("/uuid", getCredential);
 
 router.use("/projects", projectRoutes);
 router.use("/scans", scanRoutes);
+router.use("/scans", stagingRoutes);
+router.use("/ikea", ikeaRoutes);
+router.use("/local-models", localModelRoutes);
 router.use("/energy", energyRoutes);
 router.use("/dpe", dpeRoutes);
 router.use("/rge", rgeRoutes);
