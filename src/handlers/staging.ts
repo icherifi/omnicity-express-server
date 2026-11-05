@@ -22,11 +22,15 @@ const DOCUMENTS_BUCKET = 'documents';
 /** POST /api/scans/:id/stage — kicks off automated staging in the background and returns immediately. */
 export const startStaging = async (req: Request, res: Response) => {
   const { id } = req.params;
+  const scanId = Number(id);
+  if (!Number.isFinite(scanId)) {
+    return res.status(400).json({ error: 'Invalid scan id' });
+  }
 
   const { data: scan, error } = await supabase
     .from('scans')
     .select('*')
-    .eq('id', id)
+    .eq('id', scanId)
     .maybeSingle();
 
   if (error) {
@@ -48,7 +52,7 @@ export const startStaging = async (req: Request, res: Response) => {
   await supabase
     .from('scans')
     .update({ staging_status: 'processing', staging_summary: null })
-    .eq('id', id);
+    .eq('id', scanId);
   res.status(202).json({ message: 'Staging started', staging_status: 'processing' });
 
   try {
@@ -80,7 +84,7 @@ export const startStaging = async (req: Request, res: Response) => {
         staging_summary: { ...summary, preview_render_path: previewPath } as any,
         staged_at: new Date().toISOString(),
       })
-      .eq('id', id);
+      .eq('id', scanId);
   } catch (e: any) {
     console.error('Staging failed', e);
     // This write itself can hit the same kind of transient network blip that just
@@ -94,7 +98,7 @@ export const startStaging = async (req: Request, res: Response) => {
           staging_status: 'error',
           staging_summary: { errors: [e?.message ?? String(e)] } as any,
         })
-        .eq('id', id);
+        .eq('id', scanId);
 
     let { error: markErrorFailed } = await markError();
     if (markErrorFailed) {
@@ -111,11 +115,15 @@ export const startStaging = async (req: Request, res: Response) => {
 /** GET /api/scans/:id/stage — poll staging progress/result. */
 export const getStagingStatus = async (req: Request, res: Response) => {
   const { id } = req.params;
+  const scanId = Number(id);
+  if (!Number.isFinite(scanId)) {
+    return res.status(400).json({ error: 'Invalid scan id' });
+  }
 
   const { data: scan, error } = await supabase
     .from('scans')
     .select('id, staging_status, staging_summary, staged_at, serialized')
-    .eq('id', id)
+    .eq('id', scanId)
     .maybeSingle();
 
   if (error) {
