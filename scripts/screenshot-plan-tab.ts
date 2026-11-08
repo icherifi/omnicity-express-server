@@ -1,3 +1,5 @@
+import "dotenv/config";
+import { requireEnv } from "../src/utils/env";
 import { chromium } from "playwright";
 
 const SCRATCH =
@@ -13,8 +15,8 @@ async function main() {
 
   await page.goto("http://localhost:3000/login", { waitUntil: "domcontentloaded" });
   await page.waitForSelector('input[name="email"]');
-  await page.fill('input[name="email"]', "omnicity.adm@gmail.com");
-  await page.fill('input[name="password"]', "OMnicity@06#");
+  await page.fill('input[name="email"]', requireEnv("E2E_USER_EMAIL"));
+  await page.fill('input[name="password"]', requireEnv("E2E_USER_PASSWORD"));
   await page.click('button:has-text("Se connecter")', { force: true });
   await page.waitForTimeout(3000);
 

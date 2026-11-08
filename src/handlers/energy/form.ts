@@ -1,4 +1,5 @@
 import { Request, Response } from "express";
+import { iziAuthHeader } from "../../utils/env";
 import { getValue, mapOccupancyStatusToLabel, mapFiscalIncomeToInterval } from "../../utils/form";
 import { createIziSession as createIziSessionSvc, sendStepAnswer as sendStepIziAnswerSvc, getSessionResult } from "../../services/iziService";
 import { getDpeData } from "../../services/dpeService";
@@ -6,7 +7,6 @@ import { mapDpeToFormData as mapDpeToFormDataSvc, extractDpeMetrics as extractDp
 
 const IZI_API_URL = "https://qr.izi-by-edf.fr/api/socle/qr";
 const IRENOV_API_URL = "https://api.irenov.izi-by-edf.fr/api/session";
-const IZI_AUTH_TOKEN = "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9eyJzdWIiOiJUZXN0IiwibmFtZSI6IlFSIFNlcnZpY2UiLCJpYXQiOjE1MTYyMzkyMzR9JngCUr2KcZHQ-AYl6esoTdE-t-cv6RfxvmbCBwaAItA";
 
 type StepAnswer = { answer: number | number[] };
 
@@ -399,7 +399,7 @@ export const sendStepIziAnswerHandler = async (req: Request, res: Response) => {
 export const getQuizSummary = async (req: Request, res: Response) => {
   const { sessionId } = req.params;
   const resp = await fetch(`${IZI_API_URL}/sessions/${sessionId}/result`, {
-    headers: { Authorization: IZI_AUTH_TOKEN },
+    headers: { Authorization: iziAuthHeader() },
   });
   if (!resp.ok) return res.status(500).json({ error: "Erreur getQuizSummary " + resp.statusText });
   return res.status(200).json(await resp.json());

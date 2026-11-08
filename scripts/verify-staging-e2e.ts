@@ -8,6 +8,7 @@
  */
 import "dotenv/config";
 import { createClient } from "@supabase/supabase-js";
+import { requireEnv } from "../src/utils/env";
 
 const API_BASE = "http://localhost:6300";
 const SCAN_ID = 6508;
@@ -15,8 +16,8 @@ const SCAN_ID = 6508;
 async function main() {
   const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_ANON_KEY!);
   const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
-    email: "omnicity.adm@gmail.com",
-    password: "OMnicity@06#",
+    email: requireEnv("E2E_USER_EMAIL"),
+    password: requireEnv("E2E_USER_PASSWORD"),
   });
   if (authError || !authData.session) throw new Error(`Auth failed: ${authError?.message}`);
   const token = authData.session.access_token;

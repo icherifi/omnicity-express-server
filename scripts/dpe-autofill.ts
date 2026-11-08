@@ -1,3 +1,4 @@
+import { iziAuthHeader, requireEnv } from "../src/utils/env";
 import 'dotenv/config';
 import { parseStringPromise } from "xml2js";
 import fetch from "node-fetch";
@@ -22,7 +23,6 @@ import {
 
 const IZI_API_URL = "https://qr.izi-by-edf.fr/api/socle/qr";
 const IRENOV_API_URL = "https://api.irenov.izi-by-edf.fr/api/session";
-const IZI_AUTH_TOKEN = "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9eyJzdWIiOiJUZXN0IiwibmFtZSI6IlFSIFNlcnZpY2UiLCJpYXQiOjE1MTYyMzkyMzR9JngCUr2KcZHQ-AYl6esoTdE-t-cv6RfxvmbCBwaAItA";
 const OPENAI_MODEL = "gpt-4o-mini";
 
 interface StepResponse {
@@ -42,7 +42,7 @@ interface StepAnswer { answer: number | number[]; }
 async function createIziSession(): Promise<any> {
   const resp = await fetch(`${IZI_API_URL}/sessions`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: IZI_AUTH_TOKEN },
+    headers: { "Content-Type": "application/json", Authorization: iziAuthHeader() },
     body: JSON.stringify({ slug: "simulation-renovation-energetique" }),
   });
   if (!resp.ok) throw new Error(`Création session IZI: ${resp.status}`);
@@ -54,7 +54,7 @@ async function sendStepIziAnswer(stepId: string, body: StepAnswer): Promise<Step
     method: "PATCH",
     headers: {
       "Content-Type": "application/merge-patch+json",
-      Authorization: IZI_AUTH_TOKEN,
+      Authorization: iziAuthHeader(),
     },
     body: JSON.stringify(body),
   });
@@ -328,8 +328,8 @@ async function run(dpeNumber: string) {
   console.log("➡️  Récupération du XML DPE", dpeNumber);
   const xmlResp = await fetch(`https://prd-x-ademe-externe-api.de-c1.eu1.cloudhub.io/api/v1/pub/dpe/${dpeNumber}/xml`, {
     headers: {
-      client_id: "f15319ce605e407581242b71425bbcb6",
-      client_secret: "4d97b25a303b412eB968C26Aef30D933",
+      client_id: requireEnv("ADEME_CLIENT_ID"),
+      client_secret: requireEnv("ADEME_CLIENT_SECRET"),
     },
   });
   if (!xmlResp.ok) throw new Error(`DPE ${xmlResp.status}`);
@@ -414,7 +414,7 @@ async function run(dpeNumber: string) {
     currentStep = stepData.nextStep;
   }
 
-  const summary = await (await fetch(`${IZI_API_URL}/sessions/${session.id}/result`, { headers: { Authorization: IZI_AUTH_TOKEN } })).json();
+  const summary = await (await fetch(`${IZI_API_URL}/sessions/${session.id}/result`, { headers: { Authorization: iziAuthHeader() } })).json();
   console.log("=== RÉSUMÉ IZI ===");
   console.log(JSON.stringify(summary, null, 2));
 
