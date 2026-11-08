@@ -1,5 +1,5 @@
+import { iziAuthHeader } from "../utils/env";
 const IZI_API_URL     = "https://qr.izi-by-edf.fr/api/socle/qr";
-const IZI_AUTH_TOKEN  = "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9eyJzdWIiOiJUZXN0IiwibmFtZSI6IlFSIFNlcnZpY2UiLCJpYXQiOjE1MTYyMzkyMzR9JngCUr2KcZHQ-AYl6esoTdE-t-cv6RfxvmbCBwaAItA";
 
 export interface StepResponse {
   nextStep: {
@@ -18,21 +18,12 @@ export interface StepAnswer {
   answer: number | number[];
 }
 
-function assertTokenPresent() {
-  if (!IZI_AUTH_TOKEN) {
-    throw new Error(
-      "IZI_AUTH_TOKEN is not set – please provide it as an environment variable"
-    );
-  }
-}
-
 function izifetch(path: string, init?: RequestInit) {
-  assertTokenPresent();
   return fetch(`${IZI_API_URL}${path}`, {
     ...init,
     headers: {
       "Content-Type": "application/json",
-      Authorization: IZI_AUTH_TOKEN,
+      Authorization: iziAuthHeader(),
       ...(init?.headers ?? {}),
     },
   });

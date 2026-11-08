@@ -1,5 +1,6 @@
+import "dotenv/config";
+import { iziAuthHeader } from "../src/utils/env";
 const IZI_API_URL = "https://qr.izi-by-edf.fr/api/socle/qr";
-const IZI_AUTH_TOKEN = "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9eyJzdWIiOiJUZXN0IiwibmFtZSI6IlFSIFNlcnZpY2UiLCJpYXQiOjE1MTYyMzkyMzR9JngCUr2KcZHQ-AYl6esoTdE-t-cv6RfxvmbCBwaAItA";
 
 interface StepAnswer { answer: number | number[]; }
 interface StepResponse {
@@ -18,7 +19,7 @@ interface StepResponse {
 async function createIziSession(): Promise<any> {
   const resp = await fetch(`${IZI_API_URL}/sessions`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: IZI_AUTH_TOKEN },
+    headers: { "Content-Type": "application/json", Authorization: iziAuthHeader() },
     body: JSON.stringify({ slug: "simulation-renovation-energetique" }),
   });
   if (!resp.ok) throw new Error(`Erreur création session: ${resp.status}`);
@@ -30,7 +31,7 @@ async function sendStepIziAnswer(stepId: string, answerBody: StepAnswer): Promis
     method: "PATCH",
     headers: {
       "Content-Type": "application/merge-patch+json",
-      Authorization: IZI_AUTH_TOKEN,
+      Authorization: iziAuthHeader(),
     },
     body: JSON.stringify(answerBody),
   });

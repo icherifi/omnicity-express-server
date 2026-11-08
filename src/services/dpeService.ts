@@ -1,4 +1,5 @@
 import { parseStringPromise } from "xml2js";
+import { requireEnv } from "../utils/env";
 
 export interface DpeData {
   logement: any[][];
@@ -10,16 +11,13 @@ export interface DpeData {
 
 const ADEME_API_URL = "https://prd-x-ademe-externe-api.de-c1.eu1.cloudhub.io/api/v1/pub/dpe";
 
-const ADEME_CLIENT_ID = process.env.ADEME_CLIENT_ID ?? "f15319ce605e407581242b71425bbcb6";
-const ADEME_CLIENT_SECRET =
-  process.env.ADEME_CLIENT_SECRET ?? "4d97b25a303b412eB968C26Aef30D933";
 
 export async function fetchDpeXml(dpeNumber: string): Promise<string> {
   const url = `${ADEME_API_URL}/${dpeNumber}/xml`;
   const resp = await fetch(url, {
     headers: {
-      client_id: ADEME_CLIENT_ID,
-      client_secret: ADEME_CLIENT_SECRET,
+      client_id: requireEnv("ADEME_CLIENT_ID"),
+      client_secret: requireEnv("ADEME_CLIENT_SECRET"),
       "Content-Type": "application/json",
     },
   });
