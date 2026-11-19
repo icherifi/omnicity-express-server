@@ -1,13 +1,15 @@
 import { Router } from "express";
-import { createScan, getScans, getScansByProjectId } from "../handlers/scan";
+import { createScan, getScansByProjectId } from "../handlers/scan";
+import { requireProjectAccess } from "../middleware/requireAccess";
 
+// Mounted behind verifyToken + requireApproved (see routes/index.ts).
+// There is deliberately no "list every scan" route any more.
 const router = Router();
 
-// /api/scans
-router.post("", createScan)
+router.param("projectId", requireProjectAccess);
 
-// /api/scans
-router.get("", getScans)
+// /api/scans  (the project_id in the body is checked by row level security)
+router.post("", createScan);
 
 // /api/scans/project/:projectId
 router.get("/project/:projectId", getScansByProjectId);

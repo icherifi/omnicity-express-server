@@ -10,9 +10,8 @@ export interface DpeData {
 
 const ADEME_API_URL = "https://prd-x-ademe-externe-api.de-c1.eu1.cloudhub.io/api/v1/pub/dpe";
 
-const ADEME_CLIENT_ID = process.env.ADEME_CLIENT_ID ?? "f15319ce605e407581242b71425bbcb6";
-const ADEME_CLIENT_SECRET =
-  process.env.ADEME_CLIENT_SECRET ?? "4d97b25a303b412eB968C26Aef30D933";
+const ADEME_CLIENT_ID = process.env.ADEME_CLIENT_ID ?? "";
+const ADEME_CLIENT_SECRET = process.env.ADEME_CLIENT_SECRET ?? "";
 
 export async function fetchDpeXml(dpeNumber: string): Promise<string> {
   const url = `${ADEME_API_URL}/${dpeNumber}/xml`;

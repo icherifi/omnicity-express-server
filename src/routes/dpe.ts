@@ -1,12 +1,10 @@
 import { Router } from "express";
 import { saveDpeFormToDb } from "../handlers/dpe";
-import { verifyToken } from "../middleware/auth";
 
+// Mounted behind verifyToken + requireApproved (see routes/index.ts).
 const router = Router();
 
-router.use(verifyToken);
-
-// /api/dpe/save-form
+// /api/dpe/save-form  (the projectId in the body is checked by row level security)
 router.post("/save-form", saveDpeFormToDb);
 
 export default router;

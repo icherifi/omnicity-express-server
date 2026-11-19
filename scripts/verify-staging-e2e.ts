@@ -15,8 +15,8 @@ const SCAN_ID = 6508;
 async function main() {
   const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_ANON_KEY!);
   const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
-    email: "omnicity.adm@gmail.com",
-    password: "OMnicity@06#",
+    email: process.env.E2E_EMAIL!,
+    password: process.env.E2E_PASSWORD!,
   });
   if (authError || !authData.session) throw new Error(`Auth failed: ${authError?.message}`);
   const token = authData.session.access_token;

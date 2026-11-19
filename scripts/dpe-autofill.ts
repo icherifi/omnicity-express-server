@@ -22,7 +22,8 @@ import {
 
 const IZI_API_URL = "https://qr.izi-by-edf.fr/api/socle/qr";
 const IRENOV_API_URL = "https://api.irenov.izi-by-edf.fr/api/session";
-const IZI_AUTH_TOKEN = "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9eyJzdWIiOiJUZXN0IiwibmFtZSI6IlFSIFNlcnZpY2UiLCJpYXQiOjE1MTYyMzkyMzR9JngCUr2KcZHQ-AYl6esoTdE-t-cv6RfxvmbCBwaAItA";
+// Set IZI_AUTH_TOKEN (the full "Bearer ..." header value) in the environment; never commit it.
+const IZI_AUTH_TOKEN = process.env.IZI_AUTH_TOKEN ?? "";
 const OPENAI_MODEL = "gpt-4o-mini";
 
 interface StepResponse {
@@ -328,8 +329,8 @@ async function run(dpeNumber: string) {
   console.log("➡️  Récupération du XML DPE", dpeNumber);
   const xmlResp = await fetch(`https://prd-x-ademe-externe-api.de-c1.eu1.cloudhub.io/api/v1/pub/dpe/${dpeNumber}/xml`, {
     headers: {
-      client_id: "f15319ce605e407581242b71425bbcb6",
-      client_secret: "4d97b25a303b412eB968C26Aef30D933",
+      client_id: process.env.ADEME_CLIENT_ID ?? "",
+      client_secret: process.env.ADEME_CLIENT_SECRET ?? "",
     },
   });
   if (!xmlResp.ok) throw new Error(`DPE ${xmlResp.status}`);

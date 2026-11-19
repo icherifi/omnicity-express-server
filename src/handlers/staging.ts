@@ -1,21 +1,33 @@
-import { createClient } from '@supabase/supabase-js';
 import { Request, Response } from 'express';
-import dotenv from 'dotenv';
-import { Database } from '../types/database.types';
+import { getServiceClient } from '../lib/supabase';
 import { runStaging } from '../services/stagingOrchestratorService';
 import { RoomPlanCapturedRoom } from '../types/staging.types';
 
-dotenv.config();
-const supabaseUrl = process.env.SUPABASE_URL;
-// documents is a private bucket (RLS blocks anon reads) - this handler runs as a
-// trusted background job with no per-user scoping, so service_role is correct here,
-// not the anon key the rest of the codebase uses for user-facing requests.
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+// documents is a private bucket (RLS blocks client reads of other users' files) and this
+// handler runs as a trusted background job, so it uses the service-role client - which
+// BYPASSES row level security. That is only safe because routes/staging.ts runs
+// requireScanAccess (as the calling user) before these handlers, so the caller is
+// already known to be allowed to touch this scan.
+const supabase = getServiceClient();
 
-if (!supabaseUrl || !supabaseKey) {
-  throw new Error("Missing Supabase environment variables");
+// Staging is slow and pays for Claude calls: one active run per user (per server instance).
+const activeRunsByUser = new Map<string, number>();
+const MAX_ACTIVE_RUNS_PER_USER = Number(process.env.STAGING_MAX_ACTIVE_PER_USER ?? 1);
+
+/**
+ * A server restart / Fly auto-stop kills in-flight runs without updating the row, leaving
+ * the scan stuck on "processing" (and blocking any new run with a 409). Called once at boot.
+ */
+export async function recoverInterruptedStagingRuns() {
+  const { error } = await supabase
+    .from('scans')
+    .update({
+      staging_status: 'error',
+      staging_summary: { errors: ['Interrupted by a server restart, please retry'] } as any,
+    })
+    .in('staging_status', ['processing', 'pending']);
+  if (error) console.error('Could not recover interrupted staging runs', error.message);
 }
-const supabase = createClient<Database>(supabaseUrl, supabaseKey);
 
 const DOCUMENTS_BUCKET = 'documents';
 
@@ -45,6 +57,12 @@ export const startStaging = async (req: Request, res: Response) => {
   if (scan.staging_status === 'processing' || scan.staging_status === 'pending') {
     return res.status(409).json({ error: `Staging already ${scan.staging_status}` });
   }
+  const userId: string = res.locals.user.id;
+  const activeRuns = activeRunsByUser.get(userId) ?? 0;
+  if (activeRuns >= MAX_ACTIVE_RUNS_PER_USER) {
+    return res.status(429).json({ error: 'A staging run is already in progress for your account' });
+  }
+  activeRunsByUser.set(userId, activeRuns + 1);
 
   // Clear any previous attempt's summary/error — otherwise a client polling mid-run sees
   // "processing" alongside a stale error from the last failed attempt and (reasonably)
@@ -109,6 +127,10 @@ export const startStaging = async (req: Request, res: Response) => {
     if (markErrorFailed) {
       console.error('Giving up recording staging error - scan will stay stuck as "processing"', markErrorFailed);
     }
+  } finally {
+    const remaining = (activeRunsByUser.get(userId) ?? 1) - 1;
+    if (remaining <= 0) activeRunsByUser.delete(userId);
+    else activeRunsByUser.set(userId, remaining);
   }
 };
 

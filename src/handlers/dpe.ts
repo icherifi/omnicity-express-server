@@ -1,26 +1,15 @@
 import { Request, Response } from 'express';
-import { createClient } from '@supabase/supabase-js';
-import dotenv from 'dotenv';
-
-dotenv.config();
-const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_ANON_KEY;
-
-if (!supabaseUrl || !supabaseKey) {
-  throw new Error("Missing Supabase environment variables");
-}
-
-const supabase = createClient(supabaseUrl, supabaseKey);
 
 export const saveDpeFormToDb = async (req: Request, res: Response) => {
   try {
     const { dpeFormData, projectId } = req.body;
 
-    if (!projectId) {
+    if (typeof projectId !== 'string' || !projectId || !dpeFormData) {
       return res.status(400).json({ error: 'Données manquantes' });
     }
 
-    const { data, error } = await supabase
+    // Runs as the calling user: row level security rejects a project they can't access.
+    const { data, error } = await res.locals.db
       .from('dpe')
       .insert({
         id_project: projectId,
@@ -31,12 +20,13 @@ export const saveDpeFormToDb = async (req: Request, res: Response) => {
       .select();
 
     if (error) {
-      return res.status(500).json({ error: error.message });
+      const forbidden = error.code === '42501';
+      return res.status(forbidden ? 403 : 500).json({ error: forbidden ? 'Forbidden' : 'Erreur serveur' });
     }
 
     res.status(201).json({ message: 'Données DPE enregistrées avec succès', data });
   } catch (error) {
-    console.error('Erreur lors de l\'enregistrement des données DPE:', error);
+    console.error("Erreur lors de l'enregistrement des données DPE:", error);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 };

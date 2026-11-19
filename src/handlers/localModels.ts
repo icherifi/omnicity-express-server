@@ -9,6 +9,10 @@ import * as localModelService from "../services/localModelService";
  * fixed catalog of models this app itself onboarded - not arbitrary user data.
  */
 export const getModel = async (req: Request, res: Response) => {
+  // modelId ends up in a filesystem path and a storage path: no separators, no "..".
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(req.params.modelId)) {
+    return res.status(400).json({ error: "Invalid model id" });
+  }
   try {
     const filePath = await localModelService.getModel(req.params.modelId);
     res.setHeader("Content-Type", "model/gltf-binary");

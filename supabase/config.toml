@@ -86,7 +86,7 @@ enabled = true
 # in emails.
 site_url = "http://127.0.0.1:3000"
 # A list of *exact* URLs that auth providers are permitted to redirect to post authentication.
-additional_redirect_urls = ["https://127.0.0.1:3000"]
+additional_redirect_urls = ["https://127.0.0.1:3000", "http://127.0.0.1:3000", "http://localhost:3000"]
 # How long tokens are valid for, in seconds. Defaults to 3600 (1 hour), maximum 604,800 (1 week).
 jwt_expiry = 3600
 # If disabled, the refresh token will never expire.
@@ -98,6 +98,8 @@ refresh_token_reuse_interval = 10
 enable_signup = true
 # Allow/disallow anonymous sign-ins to your project.
 enable_anonymous_sign_ins = false
+# Passwords shorter than this are rejected.
+minimum_password_length = 8
 # Allow/disallow testing manual linking of accounts
 enable_manual_linking = false
 
@@ -108,9 +110,11 @@ enable_signup = true
 # addresses. If disabled, only the new email is required to confirm.
 double_confirm_changes = true
 # If enabled, users need to confirm their email address before signing in.
-enable_confirmations = false
+enable_confirmations = true
 # Controls the minimum amount of time that must pass before sending another signup confirmation or password reset email.
-max_frequency = "1s"
+max_frequency = "60s"
+# Lifetime of the links sent by email (1 hour).
+otp_expiry = 3600
 
 # Use a production-ready SMTP server
 # [auth.email.smtp]
@@ -235,3 +239,21 @@ s3_region = "env(S3_REGION)"
 s3_access_key = "env(S3_ACCESS_KEY)"
 # Configures AWS_SECRET_ACCESS_KEY for S3 bucket
 s3_secret_key = "env(S3_SECRET_KEY)"
+
+# French, user-friendly emails (button + fallback link). In production the same HTML must be
+# pasted in the dashboard (Authentication > Email Templates) - the dashboard does not read this file.
+[auth.email.template.confirmation]
+subject = "Confirmez votre adresse email - Omnicity"
+content_path = "./supabase/templates/confirmation.html"
+
+[auth.email.template.recovery]
+subject = "Réinitialisation de votre mot de passe - Omnicity"
+content_path = "./supabase/templates/recovery.html"
+
+[auth.email.template.email_change]
+subject = "Confirmez votre nouvelle adresse email - Omnicity"
+content_path = "./supabase/templates/email_change.html"
+
+[auth.email.template.invite]
+subject = "Vous êtes invité sur Omnicity"
+content_path = "./supabase/templates/invite.html"

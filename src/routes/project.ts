@@ -1,12 +1,15 @@
 import { Router } from "express";
 import { getProjects, findProject, updateProject, deleteProject, uploadImage, createProjects, getProjectImages, updateProjectImageFullPath } from "../handlers/project";
 import { getScansByProjectId } from "../handlers/scan";
-import { verifyToken } from "../middleware/auth";
+import { requireProjectAccess } from "../middleware/requireAccess";
 import { saveEnergyResult, getEnergyResult } from "../handlers/energy";
 
+// Mounted behind verifyToken + requireApproved (see routes/index.ts).
 const router = Router();
 
-router.use(verifyToken);
+// Every route with a :projectId first checks, as the calling user, that the project is
+// theirs, shared with them, or that they are an admin (otherwise 404).
+router.param("projectId", requireProjectAccess);
 
 // /api/projects/
 router.get("", getProjects);

@@ -14,8 +14,8 @@ async function main() {
 
   await page.goto("http://localhost:3000/login", { waitUntil: "domcontentloaded" });
   await page.waitForSelector('input[name="email"]');
-  await page.fill('input[name="email"]', "omnicity.adm@gmail.com");
-  await page.fill('input[name="password"]', "OMnicity@06#");
+  await page.fill('input[name="email"]', process.env.E2E_EMAIL!);
+  await page.fill('input[name="password"]', process.env.E2E_PASSWORD!);
   await page.click('button:has-text("Se connecter")', { force: true });
   await page.waitForTimeout(3000);
   console.log("logged in, URL:", page.url());

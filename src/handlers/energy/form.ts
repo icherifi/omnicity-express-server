@@ -6,7 +6,8 @@ import { mapDpeToFormData as mapDpeToFormDataSvc, extractDpeMetrics as extractDp
 
 const IZI_API_URL = "https://qr.izi-by-edf.fr/api/socle/qr";
 const IRENOV_API_URL = "https://api.irenov.izi-by-edf.fr/api/session";
-const IZI_AUTH_TOKEN = "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9eyJzdWIiOiJUZXN0IiwibmFtZSI6IlFSIFNlcnZpY2UiLCJpYXQiOjE1MTYyMzkyMzR9JngCUr2KcZHQ-AYl6esoTdE-t-cv6RfxvmbCBwaAItA";
+// Set IZI_AUTH_TOKEN (the full "Bearer ..." header value) in the environment; never commit it.
+const IZI_AUTH_TOKEN = process.env.IZI_AUTH_TOKEN ?? "";
 
 type StepAnswer = { answer: number | number[] };
 

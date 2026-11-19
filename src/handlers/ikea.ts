@@ -1,6 +1,9 @@
 import { Request, Response } from "express";
 import * as ikeaService from "../services/ikeaService";
 
+// itemNo is used in cache file paths: letters, digits, dot, dash, underscore only (no "..").
+const SAFE_ITEM_NO = /^(?!.*\.\.)[A-Za-z0-9._-]{1,32}$/;
+
 /** GET /api/ikea/search?q= */
 export const search = async (req: Request, res: Response) => {
   const query = req.query.q;
@@ -17,6 +20,9 @@ export const search = async (req: Request, res: Response) => {
 
 /** GET /api/ikea/product/:itemNo */
 export const getProduct = async (req: Request, res: Response) => {
+  if (!SAFE_ITEM_NO.test(req.params.itemNo)) {
+    return res.status(400).json({ error: "Invalid item number" });
+  }
   try {
     const product = await ikeaService.getProduct(req.params.itemNo);
     res.status(200).json(product);
@@ -31,6 +37,9 @@ export const getProduct = async (req: Request, res: Response) => {
  * data), and drei's useGLTF(url) has no easy way to attach a Bearer header.
  */
 export const getModel = async (req: Request, res: Response) => {
+  if (!SAFE_ITEM_NO.test(req.params.itemNo)) {
+    return res.status(400).json({ error: "Invalid item number" });
+  }
   try {
     const path = await ikeaService.getModel(req.params.itemNo);
     res.setHeader("Content-Type", "model/gltf-binary");
